@@ -39,8 +39,11 @@ func New(cat *catalog.Catalog, drv drives.Drive, exts []string, maxDepth int, on
 }
 
 type Stats struct {
-	Scanned int
-	Added   int
+	Scanned       int
+	Added         int
+	Errors        int
+	SeenFileIDs   map[string]struct{}
+	VisitedDirIDs map[string]struct{}
 }
 
 // Run 从 Drive.RootID 开始扫描
@@ -48,7 +51,10 @@ func (s *Scanner) Run(ctx context.Context, startDirID string) (Stats, error) {
 	if startDirID == "" {
 		startDirID = s.Drive.RootID()
 	}
-	stats := Stats{}
+	stats := Stats{
+		SeenFileIDs:   make(map[string]struct{}),
+		VisitedDirIDs: make(map[string]struct{}),
+	}
 	if err := s.walk(ctx, startDirID, "", 0, &stats); err != nil {
 		return stats, err
 	}
@@ -62,6 +68,7 @@ func (s *Scanner) walk(ctx context.Context, dirID, dirName string, depth int, st
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	stats.VisitedDirIDs[dirID] = struct{}{}
 
 	entries, err := s.Drive.List(ctx, dirID)
 	if err != nil {
@@ -75,6 +82,7 @@ func (s *Scanner) walk(ctx context.Context, dirID, dirName string, depth int, st
 				continue
 			}
 			if err := s.walk(ctx, e.ID, e.Name, depth+1, stats); err != nil {
+				stats.Errors++
 				log.Printf("[scanner] walk %s error: %v", e.Name, err)
 			}
 			continue
@@ -88,6 +96,7 @@ func (s *Scanner) walk(ctx context.Context, dirID, dirName string, depth int, st
 		if e.Size <= 0 {
 			continue
 		}
+		stats.SeenFileIDs[e.ID] = struct{}{}
 
 		id := s.Drive.Kind() + "-" + s.Drive.ID() + "-" + e.ID
 		parsed := Parse(e.Name)

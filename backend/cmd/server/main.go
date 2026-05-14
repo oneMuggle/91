@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -507,12 +508,112 @@ func (a *App) runScan(ctx context.Context, driveID string) {
 		return
 	}
 	log.Printf("[scan] drive=%s done scanned=%d added=%d", driveID, stats.Scanned, stats.Added)
+	if drv.Kind() == "pikpak" {
+		if stats.Errors > 0 {
+			log.Printf("[cleanup] skip stale PikPak cleanup for drive=%s: scan had %d directory errors", driveID, stats.Errors)
+		} else {
+			removed, err := a.cleanupMissingDriveVideos(ctx, driveID, stats.SeenFileIDs, stats.VisitedDirIDs, startID == drv.RootID())
+			if err != nil {
+				log.Printf("[cleanup] stale PikPak cleanup drive=%s error: %v", driveID, err)
+			} else if removed > 0 {
+				log.Printf("[cleanup] removed %d stale PikPak videos for drive=%s", removed, driveID)
+			}
+		}
+	}
 	if thumbWorker != nil {
 		a.enqueueThumbnails(ctx, driveID, thumbWorker)
 	}
 	if a.PreviewEnabled() && worker != nil {
 		go a.enqueuePending(ctx, driveID, worker)
 	}
+}
+
+func (a *App) cleanupMissingDriveVideos(ctx context.Context, driveID string, liveFileIDs map[string]struct{}, visitedDirIDs map[string]struct{}, fullDriveScan bool) (int, error) {
+	items, err := a.cat.ListVideosByDrive(ctx, driveID)
+	if err != nil {
+		return 0, err
+	}
+
+	localDir := ""
+	if a.cfg != nil {
+		localDir = a.cfg.Storage.LocalPreviewDir
+	}
+	removed := 0
+	for _, v := range items {
+		if _, ok := liveFileIDs[v.FileID]; ok {
+			continue
+		}
+		if !fullDriveScan {
+			if _, ok := visitedDirIDs[v.ParentID]; !ok {
+				continue
+			}
+		}
+		if err := removeLocalVideoAssets(localDir, v); err != nil {
+			return removed, fmt.Errorf("remove local assets for %s: %w", v.ID, err)
+		}
+		if err := a.cat.DeleteVideo(ctx, v.ID); err != nil {
+			return removed, fmt.Errorf("delete catalog video %s: %w", v.ID, err)
+		}
+		removed++
+	}
+	return removed, nil
+}
+
+func removeLocalVideoAssets(localDir string, v *catalog.Video) error {
+	if localDir == "" || v == nil || v.ID == "" {
+		return nil
+	}
+	candidates := []string{
+		v.PreviewLocal,
+		filepath.Join(localDir, v.ID+".mp4"),
+		filepath.Join(localDir, "thumbs", v.ID+".jpg"),
+		filepath.Join(localDir, "transcodes", v.ID+".mp4"),
+		filepath.Join(localDir, "transcodes", v.ID+".tmp.mp4"),
+	}
+	seen := make(map[string]struct{}, len(candidates))
+	for _, candidate := range candidates {
+		clean, ok := localPathWithin(localDir, candidate)
+		if !ok {
+			continue
+		}
+		if _, ok := seen[clean]; ok {
+			continue
+		}
+		seen[clean] = struct{}{}
+		info, err := os.Stat(clean)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			continue
+		}
+		if err := os.Remove(clean); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
+}
+
+func localPathWithin(root, path string) (string, bool) {
+	if strings.TrimSpace(root) == "" || strings.TrimSpace(path) == "" {
+		return "", false
+	}
+	rootAbs, err := filepath.Abs(root)
+	if err != nil {
+		return "", false
+	}
+	pathAbs, err := filepath.Abs(path)
+	if err != nil {
+		return "", false
+	}
+	rel, err := filepath.Rel(rootAbs, pathAbs)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return "", false
+	}
+	return pathAbs, true
 }
 
 func (a *App) enqueueUploadedVideo(ctx context.Context, v *catalog.Video) {

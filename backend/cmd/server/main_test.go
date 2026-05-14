@@ -2,11 +2,15 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"io"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/video-site/backend/internal/catalog"
+	"github.com/video-site/backend/internal/config"
 	"github.com/video-site/backend/internal/drives"
 	"github.com/video-site/backend/internal/preview"
 )
@@ -262,6 +266,97 @@ func TestShouldScanDriveSkipsLocalUpload(t *testing.T) {
 	}
 	if !shouldScanDrive(&serverFakeDrive{}) {
 		t.Fatal("normal drive should be scanned")
+	}
+}
+
+func TestCleanupMissingPikPakVideosRemovesDatabaseRowsAndLocalAssets(t *testing.T) {
+	ctx := context.Background()
+	localDir := t.TempDir()
+	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := cat.Close(); err != nil {
+			t.Fatalf("close catalog: %v", err)
+		}
+	})
+
+	obsoletePreview := filepath.Join(localDir, "obsolete.mp4")
+	obsoleteThumb := filepath.Join(localDir, "thumbs", "pikpak-PikPak-obsolete.jpg")
+	obsoleteTranscode := filepath.Join(localDir, "transcodes", "pikpak-PikPak-obsolete.mp4")
+	obsoleteTranscodeTmp := filepath.Join(localDir, "transcodes", "pikpak-PikPak-obsolete.tmp.mp4")
+	keptPreview := filepath.Join(localDir, "kept.mp4")
+	for _, path := range []string{obsoletePreview, obsoleteThumb, obsoleteTranscode, obsoleteTranscodeTmp, keptPreview} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", path, err)
+		}
+		if err := os.WriteFile(path, []byte("asset"), 0o644); err != nil {
+			t.Fatalf("write %s: %v", path, err)
+		}
+	}
+
+	now := time.Now()
+	for _, v := range []*catalog.Video{
+		{
+			ID:            "pikpak-PikPak-obsolete",
+			DriveID:       "PikPak",
+			FileID:        "obsolete",
+			Title:         "Obsolete",
+			PreviewStatus: "ready",
+			PreviewLocal:  obsoletePreview,
+		},
+		{
+			ID:            "pikpak-PikPak-kept",
+			DriveID:       "PikPak",
+			FileID:        "kept",
+			Title:         "Kept",
+			PreviewStatus: "ready",
+			PreviewLocal:  keptPreview,
+		},
+		{
+			ID:            "onedrive-OneDrive-obsolete",
+			DriveID:       "OneDrive",
+			FileID:        "obsolete",
+			Title:         "Other Drive",
+			PreviewStatus: "ready",
+		},
+	} {
+		v.PublishedAt = now
+		v.CreatedAt = now
+		v.UpdatedAt = now
+		if err := cat.UpsertVideo(ctx, v); err != nil {
+			t.Fatalf("seed %s: %v", v.ID, err)
+		}
+	}
+
+	app := &App{
+		cfg: &config.Config{Storage: config.Storage{LocalPreviewDir: localDir}},
+		cat: cat,
+	}
+	removed, err := app.cleanupMissingDriveVideos(ctx, "PikPak", map[string]struct{}{"kept": {}}, nil, true)
+	if err != nil {
+		t.Fatalf("cleanup missing videos: %v", err)
+	}
+	if removed != 1 {
+		t.Fatalf("removed = %d, want 1", removed)
+	}
+	if _, err := cat.GetVideo(ctx, "pikpak-PikPak-obsolete"); err != sql.ErrNoRows {
+		t.Fatalf("obsolete video lookup error = %v, want sql.ErrNoRows", err)
+	}
+	if _, err := cat.GetVideo(ctx, "pikpak-PikPak-kept"); err != nil {
+		t.Fatalf("kept video missing after cleanup: %v", err)
+	}
+	if _, err := cat.GetVideo(ctx, "onedrive-OneDrive-obsolete"); err != nil {
+		t.Fatalf("other drive video missing after cleanup: %v", err)
+	}
+	for _, path := range []string{obsoletePreview, obsoleteThumb, obsoleteTranscode, obsoleteTranscodeTmp} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("obsolete asset %s still exists, stat err=%v", path, err)
+		}
+	}
+	if _, err := os.Stat(keptPreview); err != nil {
+		t.Fatalf("kept preview missing: %v", err)
 	}
 }
 

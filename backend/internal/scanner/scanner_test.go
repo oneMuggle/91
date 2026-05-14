@@ -424,6 +424,61 @@ func TestRunSkipsDuplicateFileNamesWithSameSizeWhenHashesMissing(t *testing.T) {
 	}
 }
 
+func TestRunReportsSeenVideoFileIDsAndVisitedDirectories(t *testing.T) {
+	ctx := context.Background()
+	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := cat.Close(); err != nil {
+			t.Fatalf("close catalog: %v", err)
+		}
+	})
+
+	drv := &scannerTreeFakeDrive{
+		entries: map[string][]drives.Entry{
+			"root": {
+				{ID: "dir-1", Name: "Folder", IsDir: true},
+				{ID: "root-file", Name: "root.mp4", Size: 123},
+				{ID: "note", Name: "note.txt", Size: 123},
+			},
+			"dir-1": {
+				{ID: "nested-file", ParentID: "dir-1", Name: "nested.mp4", Size: 456},
+				{ID: "empty-video", ParentID: "dir-1", Name: "empty.mp4", Size: 0},
+			},
+		},
+	}
+	sc := New(cat, drv, []string{".mp4"}, 5, nil)
+
+	stats, err := sc.Run(ctx, "")
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+
+	if _, ok := stats.SeenFileIDs["root-file"]; !ok {
+		t.Fatalf("seen file ids = %#v, want root-file", stats.SeenFileIDs)
+	}
+	if _, ok := stats.SeenFileIDs["nested-file"]; !ok {
+		t.Fatalf("seen file ids = %#v, want live non-empty videos", stats.SeenFileIDs)
+	}
+	if _, ok := stats.SeenFileIDs["note"]; ok {
+		t.Fatalf("seen file ids = %#v, want non-video entries excluded", stats.SeenFileIDs)
+	}
+	if _, ok := stats.SeenFileIDs["empty-video"]; ok {
+		t.Fatalf("seen file ids = %#v, want zero-size entries excluded", stats.SeenFileIDs)
+	}
+	if _, ok := stats.VisitedDirIDs["root"]; !ok {
+		t.Fatalf("visited dir ids = %#v, want root", stats.VisitedDirIDs)
+	}
+	if _, ok := stats.VisitedDirIDs["dir-1"]; !ok {
+		t.Fatalf("visited dir ids = %#v, want nested dir", stats.VisitedDirIDs)
+	}
+	if stats.Errors != 0 {
+		t.Fatalf("errors = %d, want 0", stats.Errors)
+	}
+}
+
 type scannerFakeDrive struct {
 	entries []drives.Entry
 }
