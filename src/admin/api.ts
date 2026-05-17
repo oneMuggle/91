@@ -63,6 +63,9 @@ export type AdminDrive = {
   hasCredential: boolean;
   thumbnailGenerationStatus?: DriveGenerationStatus;
   previewGenerationStatus?: DriveGenerationStatus;
+  thumbnailReadyCount: number;
+  thumbnailPendingCount: number;
+  thumbnailFailedCount: number;
   teaserReadyCount: number;
   teaserPendingCount: number;
   teaserFailedCount: number;

@@ -127,6 +127,11 @@ func (a *AdminServer) handleListDrives(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
+	thumbnailCounts, err := a.Catalog.CountThumbnailsByDrive(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
 	generationStatuses := map[string]DriveGenerationStatuses{}
 	if a.GetDriveGenerationStatuses != nil {
 		generationStatuses = a.GetDriveGenerationStatuses()
@@ -143,6 +148,9 @@ func (a *AdminServer) handleListDrives(w http.ResponseWriter, r *http.Request) {
 		HasCredential             bool             `json:"hasCredential"`
 		ThumbnailGenerationStatus GenerationStatus `json:"thumbnailGenerationStatus"`
 		PreviewGenerationStatus   GenerationStatus `json:"previewGenerationStatus"`
+		ThumbnailReadyCount       int              `json:"thumbnailReadyCount"`
+		ThumbnailPendingCount     int              `json:"thumbnailPendingCount"`
+		ThumbnailFailedCount      int              `json:"thumbnailFailedCount"`
 		TeaserReadyCount          int              `json:"teaserReadyCount"`
 		TeaserPendingCount        int              `json:"teaserPendingCount"`
 		TeaserFailedCount         int              `json:"teaserFailedCount"`
@@ -150,6 +158,7 @@ func (a *AdminServer) handleListDrives(w http.ResponseWriter, r *http.Request) {
 	list := make([]out, 0, len(drives))
 	for _, d := range drives {
 		counts := teaserCounts[d.ID]
+		thumbCounts := thumbnailCounts[d.ID]
 		generation := generationStatuses[d.ID]
 		if generation.Thumbnail.State == "" {
 			generation.Thumbnail.State = "idle"
@@ -164,6 +173,9 @@ func (a *AdminServer) handleListDrives(w http.ResponseWriter, r *http.Request) {
 			HasCredential:             len(d.Credentials) > 0,
 			ThumbnailGenerationStatus: generation.Thumbnail,
 			PreviewGenerationStatus:   generation.Preview,
+			ThumbnailReadyCount:       thumbCounts.Ready,
+			ThumbnailPendingCount:     thumbCounts.Pending,
+			ThumbnailFailedCount:      thumbCounts.Failed,
 			TeaserReadyCount:          counts.Ready,
 			TeaserPendingCount:        counts.Pending,
 			TeaserFailedCount:         counts.Failed,

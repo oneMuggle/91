@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS videos (
     ext              TEXT,
     quality          TEXT,                      -- HD / SD
     thumbnail_url    TEXT,
+    thumbnail_status TEXT DEFAULT 'pending',    -- pending / ready / failed
     preview_file_id  TEXT,                      -- deprecated: 旧版回写网盘后的 teaser file id
     preview_local    TEXT,                      -- 本地 teaser 路径（兜底）
     preview_status   TEXT DEFAULT 'pending',    -- pending / ready / failed

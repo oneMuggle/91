@@ -85,7 +85,7 @@ func (d *Driver) listWithRetry(ctx context.Context, dirID string) (*[]sdk.File, 
 	d.listMu.Lock()
 	defer d.listMu.Unlock()
 
-	cooldowns := []time.Duration{30 * time.Minute, 60 * time.Minute, 120 * time.Minute}
+	cooldowns := []time.Duration{30 * time.Minute, 30 * time.Minute, 30 * time.Minute}
 	var lastErr error
 	for attempt := 0; ; attempt++ {
 		if err := d.waitForListSlotLocked(ctx); err != nil {

@@ -184,6 +184,7 @@ export function DrivesPage() {
               <th>生成状态</th>
               <th>扫描根</th>
               <th>本地占用</th>
+              <th>封面</th>
               <th>Teaser</th>
               <th className="is-actions">操作</th>
             </tr>
@@ -206,8 +207,19 @@ export function DrivesPage() {
                 <td data-label="本地占用">
                   <StorageCell usage={storage?.drives[d.id]} />
                 </td>
+                <td data-label="封面">
+                  <GenerationCounts
+                    ready={d.thumbnailReadyCount}
+                    pending={d.thumbnailPendingCount}
+                    failed={d.thumbnailFailedCount}
+                  />
+                </td>
                 <td data-label="Teaser">
-                  <TeaserCounts drive={d} />
+                  <GenerationCounts
+                    ready={d.teaserReadyCount}
+                    pending={d.teaserPendingCount}
+                    failed={d.teaserFailedCount}
+                  />
                 </td>
                 <td className="is-actions" data-label="操作">
                   <button className="admin-btn" onClick={() => handleRescan(d)}>
@@ -297,17 +309,25 @@ function StorageCell({ usage }: { usage?: api.DriveStorageUsage }) {
   );
 }
 
-function TeaserCounts({ drive }: { drive: api.AdminDrive }) {
+function GenerationCounts({
+  ready,
+  pending,
+  failed,
+}: {
+  ready?: number;
+  pending?: number;
+  failed?: number;
+}) {
   return (
-    <div className="admin-teaser-counts">
+    <div className="admin-generation-counts">
       <span className="admin-drive-teaser__metric is-ready">
-        就绪 {drive.teaserReadyCount ?? 0}
+        就绪 {ready ?? 0}
       </span>
       <span className="admin-drive-teaser__metric is-pending">
-        待生成 {drive.teaserPendingCount ?? 0}
+        待生成 {pending ?? 0}
       </span>
       <span className="admin-drive-teaser__metric is-failed">
-        失败 {drive.teaserFailedCount ?? 0}
+        失败 {failed ?? 0}
       </span>
     </div>
   );

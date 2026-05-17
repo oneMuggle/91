@@ -293,7 +293,8 @@
   color: var(--color-danger);
 }
 
-.admin-teaser-counts {
+.admin-teaser-counts,
+.admin-generation-counts {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
@@ -473,7 +474,8 @@
   .admin-table.admin-drives-table .admin-status,
   .admin-table.admin-drives-table .admin-storage-cell,
   .admin-table.admin-drives-table .admin-generation-statuses,
-  .admin-table.admin-drives-table .admin-teaser-counts {
+  .admin-table.admin-drives-table .admin-teaser-counts,
+  .admin-table.admin-drives-table .admin-generation-counts {
     justify-self: start;
   }
 }
@@ -750,13 +752,27 @@
 
 @media (max-width: 768px) {
   .admin-shell {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
+    width: 100%;
+    max-width: 100vw;
+    overflow-x: hidden;
   }
 
   .admin-sidebar {
-    flex-direction: row;
+    display: block;
+    min-width: 0;
+    width: 100%;
+    max-width: 100vw;
+    box-sizing: border-box;
     padding: var(--space-2);
     overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .admin-sidebar::-webkit-scrollbar {
+    display: none;
   }
 
   .admin-sidebar__brand,
@@ -765,15 +781,28 @@
   }
 
   .admin-nav {
+    width: max-content;
+    min-width: 0;
+    display: flex;
     flex-direction: row;
+    flex-wrap: nowrap;
+    gap: 4px;
     margin-top: 0;
   }
 
   .admin-nav__link {
+    flex: 0 0 auto;
+    justify-content: center;
+    gap: 6px;
     white-space: nowrap;
+    text-align: center;
     padding: 8px 12px;
     border-left: 0;
     border-bottom: 2px solid transparent;
+  }
+
+  .admin-nav__link svg {
+    flex: 0 0 auto;
   }
 
   .admin-nav__link.is-active {
@@ -783,11 +812,32 @@
 
   .admin-main {
     padding: var(--space-3);
+    min-width: 0;
+    max-width: 100vw;
     overflow-x: hidden;
   }
 
   .admin-page__header {
     align-items: stretch;
+  }
+
+  .admin-page__header > div {
+    min-width: 0;
+    width: 100%;
+    max-width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .admin-page__header > div > * {
+    min-width: 0;
+    flex: 1 1 160px;
+  }
+
+  .admin-page__header select,
+  .admin-page__header input {
+    min-width: 0 !important;
+    width: 100%;
+    box-sizing: border-box;
   }
 
   .admin-page__header .admin-btn {

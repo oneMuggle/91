@@ -33,14 +33,17 @@ func TestThumbWorkerUpdatesThumbnailWithoutChangingPreviewStatus(t *testing.T) {
 	if got.PreviewStatus != "pending" {
 		t.Fatalf("preview status = %q, want pending", got.PreviewStatus)
 	}
-	if got.DurationSeconds != 42 {
-		t.Fatalf("duration = %d, want probed duration", got.DurationSeconds)
+	if got.DurationSeconds != 0 {
+		t.Fatalf("duration = %d, want unchanged", got.DurationSeconds)
 	}
 	if gen.thumbnailVideoID != video.ID {
 		t.Fatalf("thumbnail video id = %q, want %q", gen.thumbnailVideoID, video.ID)
 	}
-	if gen.thumbnailDuration != 42 {
-		t.Fatalf("thumbnail duration = %.1f, want 42", gen.thumbnailDuration)
+	if gen.thumbnailDuration != 0 {
+		t.Fatalf("thumbnail duration = %.1f, want fixed-offset thumbnail generation", gen.thumbnailDuration)
+	}
+	if gen.probeCalls != 0 {
+		t.Fatalf("probe calls = %d, want 0 for thumbnail generation", gen.probeCalls)
 	}
 	if drv.streamFileID != video.FileID {
 		t.Fatalf("stream file id = %q, want %q", drv.streamFileID, video.FileID)
@@ -251,6 +254,7 @@ func TestPreviewWorkerRateLimitLeavesCurrentPendingAndSkipsNextVideo(t *testing.
 	drv := &previewFakeDrive{}
 	worker := NewWorker(gen, cat, drv, "")
 
+	before := time.Now()
 	worker.process(ctx, first)
 	gotFirst, err := cat.GetVideo(ctx, first.ID)
 	if err != nil {
@@ -262,6 +266,7 @@ func TestPreviewWorkerRateLimitLeavesCurrentPendingAndSkipsNextVideo(t *testing.
 	if gen.generateCalls != 1 {
 		t.Fatalf("generate calls = %d, want 1", gen.generateCalls)
 	}
+	assertCooldownAround(t, worker.Status().CooldownUntil, before, 5*time.Minute)
 
 	gen.generateErr = nil
 	worker.process(ctx, &second)
@@ -275,6 +280,33 @@ func TestPreviewWorkerRateLimitLeavesCurrentPendingAndSkipsNextVideo(t *testing.
 	if gen.generateCalls != 1 {
 		t.Fatalf("generate calls = %d, want second video skipped during cooldown", gen.generateCalls)
 	}
+}
+
+func TestThumbWorkerRateLimitCoolsDownFiveMinutes(t *testing.T) {
+	ctx := context.Background()
+	cat, video := seedPreviewTestVideo(t, "thumb-rate-limit")
+
+	gen := &fakeThumbGenerator{
+		generateErr: &drives.RateLimitError{
+			Provider:   "media source",
+			RetryAfter: 2 * time.Hour,
+			Err:        errors.New("429 Too Many Requests"),
+		},
+	}
+	drv := &previewFakeDrive{}
+	worker := NewThumbWorker(gen, cat, drv)
+
+	before := time.Now()
+	worker.process(ctx, video)
+
+	got, err := cat.GetVideo(ctx, video.ID)
+	if err != nil {
+		t.Fatalf("get video: %v", err)
+	}
+	if got.ThumbnailURL != "" {
+		t.Fatalf("thumbnail = %q, want unchanged after rate limit", got.ThumbnailURL)
+	}
+	assertCooldownAround(t, worker.Status().CooldownUntil, before, 5*time.Minute)
 }
 
 func TestPreviewWorkerP115TransientErrorKeepsVideoPending(t *testing.T) {
@@ -298,6 +330,18 @@ func TestPreviewWorkerP115TransientErrorKeepsVideoPending(t *testing.T) {
 	}
 	if gen.generateCalls != 1 {
 		t.Fatalf("generate calls = %d, want 1", gen.generateCalls)
+	}
+}
+
+func assertCooldownAround(t *testing.T, until time.Time, before time.Time, want time.Duration) {
+	t.Helper()
+	if until.IsZero() {
+		t.Fatal("cooldown is zero, want active cooldown")
+	}
+	min := before.Add(want - time.Second)
+	max := time.Now().Add(want + time.Second)
+	if until.Before(min) || until.After(max) {
+		t.Fatalf("cooldown until = %s, want around %s from now", until.Format(time.RFC3339Nano), want)
 	}
 }
 
@@ -356,9 +400,12 @@ type fakeThumbGenerator struct {
 	thumbnailVideoID  string
 	thumbnailDuration float64
 	thumbnailURL      string
+	probeCalls        int
+	generateErr       error
 }
 
 func (g *fakeThumbGenerator) Probe(context.Context, *drives.StreamLink) (float64, error) {
+	g.probeCalls++
 	return 42, nil
 }
 
@@ -367,6 +414,9 @@ func (g *fakeThumbGenerator) GenerateThumbnail(_ context.Context, link *drives.S
 	g.thumbnailDuration = duration
 	if link != nil {
 		g.thumbnailURL = link.URL
+	}
+	if g.generateErr != nil {
+		return "", g.generateErr
 	}
 	return "/tmp/" + videoID + ".jpg", nil
 }

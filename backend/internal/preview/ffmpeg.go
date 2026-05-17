@@ -195,27 +195,20 @@ func pickSegmentStarts(duration float64, n int, eachSec float64) []float64 {
 }
 
 // pickThumbnailOffset 选封面抽帧的时间点（秒）。独立于 teaser。
-func pickThumbnailOffset(duration float64) float64 {
-	if duration <= 0 {
-		return 5
-	}
-	// 短视频从 30% 抽；长视频从 20% 抽，避开片头
-	if duration < 60 {
-		return math.Max(1, duration*0.3)
-	}
-	return math.Max(5, math.Min(duration*0.2, 120))
+func pickThumbnailOffset() float64 {
+	return 5
 }
 
 // --- 封面 ---
 
-// GenerateThumbnail 抽一张 jpg 封面。偏移点由 duration 决定（独立于 teaser）。
+// GenerateThumbnail 抽一张 jpg 封面。封面统一从第 5 秒抽帧，避免为封面单独探时长。
 func (g *Generator) GenerateThumbnail(ctx context.Context, link *drives.StreamLink, videoID string, duration float64) (string, error) {
 	dir := filepath.Join(g.cfg.LocalDir, "thumbs")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
 	dst := filepath.Join(dir, videoID+".jpg")
-	offset := pickThumbnailOffset(duration)
+	offset := pickThumbnailOffset()
 
 	ctx2, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
@@ -897,9 +890,10 @@ type ThumbWorker struct {
 }
 
 const (
-	defaultRateLimitCooldown        = 30 * time.Minute
-	maxPreviewTeaserSizeBytes int64 = 5 * 1024 * 1024 * 1024
-	previewStatusSkipped            = "skipped"
+	defaultTransientMediaCooldown            = 5 * time.Minute
+	defaultGenerationRateLimitCooldown       = 5 * time.Minute
+	maxPreviewTeaserSizeBytes          int64 = 5 * 1024 * 1024 * 1024
+	previewStatusSkipped                     = "skipped"
 )
 
 type rateLimitState struct {
@@ -961,7 +955,7 @@ func (s *rateLimitState) active(now time.Time) (time.Time, bool, bool) {
 
 func (s *rateLimitState) pause(now time.Time, d time.Duration) time.Time {
 	if d <= 0 {
-		d = defaultRateLimitCooldown
+		d = defaultTransientMediaCooldown
 	}
 	until := now.Add(d)
 	s.mu.Lock()
@@ -1149,14 +1143,11 @@ func (w *Worker) skipIfRateLimited(v *catalog.Video) bool {
 }
 
 func (w *Worker) pauseForRateLimit(err error, step, title string) bool {
-	retryAfter, ok := drives.RateLimitRetryAfter(err)
+	_, ok := drives.RateLimitRetryAfter(err)
 	if !ok {
 		return false
 	}
-	if retryAfter <= 0 {
-		retryAfter = w.RateLimitCooldown
-	}
-	until := w.rateLimit.pause(time.Now(), retryAfter)
+	until := w.rateLimit.pause(time.Now(), defaultGenerationRateLimitCooldown)
 	log.Printf("[preview] drive=%s rate-limited until=%s step=%s video=%s: %v", w.Drive.ID(), until.Format(time.RFC3339), step, title, err)
 	return true
 }
@@ -1185,14 +1176,11 @@ func (w *ThumbWorker) skipIfRateLimited(v *catalog.Video) bool {
 }
 
 func (w *ThumbWorker) pauseForRateLimit(err error, step, title string) bool {
-	retryAfter, ok := drives.RateLimitRetryAfter(err)
+	_, ok := drives.RateLimitRetryAfter(err)
 	if !ok {
 		return false
 	}
-	if retryAfter <= 0 {
-		retryAfter = w.RateLimitCooldown
-	}
-	until := w.rateLimit.pause(time.Now(), retryAfter)
+	until := w.rateLimit.pause(time.Now(), defaultGenerationRateLimitCooldown)
 	log.Printf("[thumb] drive=%s rate-limited until=%s step=%s video=%s: %v", w.Drive.ID(), until.Format(time.RFC3339), step, title, err)
 	return true
 }
@@ -1231,9 +1219,11 @@ func (w *ThumbWorker) process(ctx context.Context, v *catalog.Video) {
 	}
 	if current, err := w.Catalog.GetVideo(ctx, v.ID); err == nil {
 		if current.ThumbnailURL != "" {
+			_ = w.Catalog.UpdateVideoMeta(ctx, v.ID, catalog.VideoMetaPatch{ThumbnailStatus: "ready"})
 			return
 		}
 	}
+	_ = w.Catalog.UpdateVideoMeta(ctx, v.ID, catalog.VideoMetaPatch{ThumbnailStatus: "pending"})
 	link, err := w.Drive.StreamURL(ctx, v.FileID)
 	if err != nil {
 		if localLink, ok := localPreviewLink(v); ok {
@@ -1243,6 +1233,7 @@ func (w *ThumbWorker) process(ctx context.Context, v *catalog.Video) {
 				return
 			}
 			log.Printf("[thumb] streamURL %s: %v", v.Title, err)
+			_ = w.Catalog.UpdateVideoMeta(ctx, v.ID, catalog.VideoMetaPatch{ThumbnailStatus: "failed"})
 			return
 		}
 	}
@@ -1257,38 +1248,21 @@ func (w *ThumbWorker) process(ctx context.Context, v *catalog.Video) {
 			return
 		}
 		log.Printf("[thumb] generate %s: %v", v.Title, err)
+		_ = w.Catalog.UpdateVideoMeta(ctx, v.ID, catalog.VideoMetaPatch{ThumbnailStatus: "failed"})
 		return
 	}
 }
 
 func (w *ThumbWorker) generateThumbnailFromLink(ctx context.Context, v *catalog.Video, link *drives.StreamLink) error {
-	duration := thumbnailDurationHint(v, link)
-	if duration <= 0 {
-		if dur, err := w.Gen.Probe(ctx, link); err == nil && dur > 0 {
-			duration = dur
-			_ = w.Catalog.UpdateVideoMeta(ctx, v.ID, catalog.VideoMetaPatch{
-				DurationSeconds: int(dur),
-			})
-		} else if err != nil {
-			return err
-		}
-	}
-
-	if _, err := w.Gen.GenerateThumbnail(ctx, link, v.ID, duration); err != nil {
+	if _, err := w.Gen.GenerateThumbnail(ctx, link, v.ID, 0); err != nil {
 		return err
 	}
 	_ = w.Catalog.UpdateVideoMeta(ctx, v.ID, catalog.VideoMetaPatch{
-		ThumbnailURL: "/p/thumb/" + v.ID,
+		ThumbnailURL:    "/p/thumb/" + v.ID,
+		ThumbnailStatus: "ready",
 	})
 	log.Printf("[thumb] ready %s", v.Title)
 	return nil
-}
-
-func thumbnailDurationHint(v *catalog.Video, link *drives.StreamLink) float64 {
-	if link != nil && v.PreviewLocal != "" && filepath.Clean(link.URL) == filepath.Clean(v.PreviewLocal) {
-		return 0
-	}
-	return float64(v.DurationSeconds)
 }
 
 func localPreviewLink(v *catalog.Video) (*drives.StreamLink, bool) {

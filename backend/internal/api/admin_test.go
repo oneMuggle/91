@@ -146,16 +146,19 @@ func TestHandleListDrivesIncludesTeaserCounts(t *testing.T) {
 
 	now := time.Now()
 	videos := []*catalog.Video{
-		{ID: "od-ready-1", DriveID: "OneDrive", FileID: "od-file-1", Title: "OD Ready 1", PreviewStatus: "ready", PublishedAt: now, CreatedAt: now, UpdatedAt: now},
+		{ID: "od-ready-1", DriveID: "OneDrive", FileID: "od-file-1", Title: "OD Ready 1", ThumbnailURL: "/p/thumb/od-ready-1", PreviewStatus: "ready", PublishedAt: now, CreatedAt: now, UpdatedAt: now},
 		{ID: "od-ready-2", DriveID: "OneDrive", FileID: "od-file-2", Title: "OD Ready 2", PreviewStatus: "ready", PublishedAt: now, CreatedAt: now, UpdatedAt: now},
 		{ID: "od-pending", DriveID: "OneDrive", FileID: "od-file-3", Title: "OD Pending", PreviewStatus: "pending", PublishedAt: now, CreatedAt: now, UpdatedAt: now},
 		{ID: "pp-pending", DriveID: "PikPak", FileID: "pp-file-1", Title: "PP Pending", PreviewStatus: "pending", PublishedAt: now, CreatedAt: now, UpdatedAt: now},
-		{ID: "pp-failed", DriveID: "PikPak", FileID: "pp-file-2", Title: "PP Failed", PreviewStatus: "failed", PublishedAt: now, CreatedAt: now, UpdatedAt: now},
+		{ID: "pp-failed", DriveID: "PikPak", FileID: "pp-file-2", Title: "PP Failed", ThumbnailURL: "/p/thumb/pp-failed", PreviewStatus: "failed", PublishedAt: now, CreatedAt: now, UpdatedAt: now},
 	}
 	for _, v := range videos {
 		if err := cat.UpsertVideo(ctx, v); err != nil {
 			t.Fatalf("seed video %s: %v", v.ID, err)
 		}
+	}
+	if err := cat.UpdateVideoMeta(ctx, "od-ready-2", catalog.VideoMetaPatch{ThumbnailStatus: "failed"}); err != nil {
+		t.Fatalf("mark thumbnail failed: %v", err)
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/admin/api/drives", nil)
@@ -179,6 +182,9 @@ func TestHandleListDrivesIncludesTeaserCounts(t *testing.T) {
 		ID                        string           `json:"id"`
 		ThumbnailGenerationStatus GenerationStatus `json:"thumbnailGenerationStatus"`
 		PreviewGenerationStatus   GenerationStatus `json:"previewGenerationStatus"`
+		ThumbnailReadyCount       int              `json:"thumbnailReadyCount"`
+		ThumbnailPendingCount     int              `json:"thumbnailPendingCount"`
+		ThumbnailFailedCount      int              `json:"thumbnailFailedCount"`
 		TeaserReadyCount          int              `json:"teaserReadyCount"`
 		TeaserPendingCount        int              `json:"teaserPendingCount"`
 		TeaserFailedCount         int              `json:"teaserFailedCount"`
@@ -187,35 +193,50 @@ func TestHandleListDrivesIncludesTeaserCounts(t *testing.T) {
 		t.Fatalf("decode: %v", err)
 	}
 	byID := map[string]struct {
-		Ready     int
-		Pending   int
-		Failed    int
-		Thumbnail GenerationStatus
-		Preview   GenerationStatus
+		TeaserReady      int
+		TeaserPending    int
+		TeaserFailed     int
+		ThumbnailReady   int
+		ThumbnailPending int
+		ThumbnailFailed  int
+		Thumbnail        GenerationStatus
+		Preview          GenerationStatus
 	}{}
 	for _, d := range got {
 		byID[d.ID] = struct {
-			Ready     int
-			Pending   int
-			Failed    int
-			Thumbnail GenerationStatus
-			Preview   GenerationStatus
+			TeaserReady      int
+			TeaserPending    int
+			TeaserFailed     int
+			ThumbnailReady   int
+			ThumbnailPending int
+			ThumbnailFailed  int
+			Thumbnail        GenerationStatus
+			Preview          GenerationStatus
 		}{
-			Ready:     d.TeaserReadyCount,
-			Pending:   d.TeaserPendingCount,
-			Failed:    d.TeaserFailedCount,
-			Thumbnail: d.ThumbnailGenerationStatus,
-			Preview:   d.PreviewGenerationStatus,
+			TeaserReady:      d.TeaserReadyCount,
+			TeaserPending:    d.TeaserPendingCount,
+			TeaserFailed:     d.TeaserFailedCount,
+			ThumbnailReady:   d.ThumbnailReadyCount,
+			ThumbnailPending: d.ThumbnailPendingCount,
+			ThumbnailFailed:  d.ThumbnailFailedCount,
+			Thumbnail:        d.ThumbnailGenerationStatus,
+			Preview:          d.PreviewGenerationStatus,
 		}
 	}
-	if byID["OneDrive"].Ready != 2 || byID["OneDrive"].Pending != 1 || byID["OneDrive"].Failed != 0 {
+	if byID["OneDrive"].TeaserReady != 2 || byID["OneDrive"].TeaserPending != 1 || byID["OneDrive"].TeaserFailed != 0 {
 		t.Fatalf("OneDrive counts = %#v, want ready=2 pending=1 failed=0", byID["OneDrive"])
+	}
+	if byID["OneDrive"].ThumbnailReady != 1 || byID["OneDrive"].ThumbnailPending != 1 || byID["OneDrive"].ThumbnailFailed != 1 {
+		t.Fatalf("OneDrive thumbnail counts = %#v, want ready=1 pending=1 failed=1", byID["OneDrive"])
 	}
 	if byID["OneDrive"].Thumbnail.State != "cooling" || byID["OneDrive"].Preview.State != "generating" {
 		t.Fatalf("OneDrive generation statuses = %#v, want thumbnail cooling and preview generating", byID["OneDrive"])
 	}
-	if byID["PikPak"].Ready != 0 || byID["PikPak"].Pending != 1 || byID["PikPak"].Failed != 1 {
+	if byID["PikPak"].TeaserReady != 0 || byID["PikPak"].TeaserPending != 1 || byID["PikPak"].TeaserFailed != 1 {
 		t.Fatalf("PikPak counts = %#v, want ready=0 pending=1 failed=1", byID["PikPak"])
+	}
+	if byID["PikPak"].ThumbnailReady != 1 || byID["PikPak"].ThumbnailPending != 1 || byID["PikPak"].ThumbnailFailed != 0 {
+		t.Fatalf("PikPak thumbnail counts = %#v, want ready=1 pending=1 failed=0", byID["PikPak"])
 	}
 	if byID["PikPak"].Thumbnail.State != "idle" || byID["PikPak"].Preview.State != "idle" {
 		t.Fatalf("PikPak generation statuses = %#v, want idle defaults", byID["PikPak"])

@@ -187,6 +187,7 @@ func (c *Catalog) IncrementLike(ctx context.Context, id string) (int, error) {
 // VideoMetaPatch 轻量更新视频元数据（仅非零值字段会被写入）
 type VideoMetaPatch struct {
 	ThumbnailURL    string
+	ThumbnailStatus string
 	DurationSeconds int
 	Category        string
 	ContentHash     string
@@ -201,6 +202,10 @@ func (c *Catalog) UpdateVideoMeta(ctx context.Context, id string, p VideoMetaPat
 	if p.ThumbnailURL != "" {
 		parts = append(parts, "thumbnail_url = ?")
 		args = append(args, p.ThumbnailURL)
+	}
+	if p.ThumbnailStatus != "" {
+		parts = append(parts, "thumbnail_status = ?")
+		args = append(args, nullableStatus(p.ThumbnailStatus))
 	}
 	if p.DurationSeconds > 0 {
 		parts = append(parts, "duration_seconds = ?")
@@ -523,6 +528,12 @@ type DriveTeaserCounts struct {
 	Failed  int
 }
 
+type DriveThumbnailCounts struct {
+	Ready   int
+	Pending int
+	Failed  int
+}
+
 func (c *Catalog) CountTeasersByDrive(ctx context.Context) (map[string]DriveTeaserCounts, error) {
 	rows, err := c.db.QueryContext(ctx,
 		`SELECT drive_id,
@@ -542,6 +553,38 @@ func (c *Catalog) CountTeasersByDrive(ctx context.Context) (map[string]DriveTeas
 	for rows.Next() {
 		var driveID string
 		var counts DriveTeaserCounts
+		if err := rows.Scan(&driveID, &counts.Ready, &counts.Pending, &counts.Failed); err != nil {
+			return nil, err
+		}
+		out[driveID] = counts
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Catalog) CountThumbnailsByDrive(ctx context.Context) (map[string]DriveThumbnailCounts, error) {
+	rows, err := c.db.QueryContext(ctx,
+		`SELECT drive_id,
+		        COUNT(CASE WHEN COALESCE(thumbnail_url, '') != '' THEN 1 END) AS ready_count,
+		        COUNT(CASE WHEN COALESCE(thumbnail_url, '') = ''
+		                     AND COALESCE(thumbnail_status, 'pending') != 'failed' THEN 1 END) AS pending_count,
+		        COUNT(CASE WHEN COALESCE(thumbnail_url, '') = ''
+		                     AND COALESCE(thumbnail_status, 'pending') = 'failed' THEN 1 END) AS failed_count
+		   FROM videos
+		  WHERE COALESCE(hidden, 0) = 0
+		    AND `+uniqueVideoWhereSQL+`
+		  GROUP BY drive_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make(map[string]DriveThumbnailCounts)
+	for rows.Next() {
+		var driveID string
+		var counts DriveThumbnailCounts
 		if err := rows.Scan(&driveID, &counts.Ready, &counts.Pending, &counts.Failed); err != nil {
 			return nil, err
 		}
