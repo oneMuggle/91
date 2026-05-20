@@ -479,6 +479,65 @@ func TestRunReportsSeenVideoFileIDsAndVisitedDirectories(t *testing.T) {
 	}
 }
 
+func TestRunExcludesP115MoviesDirectoryFromStatsAndCatalog(t *testing.T) {
+	ctx := context.Background()
+	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := cat.Close(); err != nil {
+			t.Fatalf("close catalog: %v", err)
+		}
+	})
+
+	drv := &scannerTreeFakeDrive{
+		kind: "p115",
+		id:   "115",
+		entries: map[string][]drives.Entry{
+			"root": {
+				{ID: "movies-dir", Name: "影视", IsDir: true},
+				{ID: "normal-file", Name: "normal.mp4", Size: 123},
+			},
+			"movies-dir": {
+				{ID: "movie-file", ParentID: "movies-dir", Name: "movie.mp4", Size: 456},
+				{ID: "nested-dir", Name: "Nested", IsDir: true},
+			},
+			"nested-dir": {
+				{ID: "nested-movie-file", ParentID: "nested-dir", Name: "nested.mp4", Size: 789},
+			},
+		},
+	}
+	sc := New(cat, drv, []string{".mp4"}, 5, nil)
+
+	stats, err := sc.Run(ctx, "")
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+
+	if stats.Scanned != 1 {
+		t.Fatalf("scanned = %d, want only non-excluded file counted", stats.Scanned)
+	}
+	if stats.Added != 1 {
+		t.Fatalf("added = %d, want only non-excluded file added", stats.Added)
+	}
+	if _, ok := stats.ExcludedFileIDs["movie-file"]; !ok {
+		t.Fatalf("excluded file ids = %#v, want movie-file", stats.ExcludedFileIDs)
+	}
+	if _, ok := stats.ExcludedFileIDs["nested-movie-file"]; !ok {
+		t.Fatalf("excluded file ids = %#v, want nested-movie-file", stats.ExcludedFileIDs)
+	}
+	if _, err := cat.GetVideo(ctx, "p115-115-movie-file"); err != sql.ErrNoRows {
+		t.Fatalf("excluded direct movie get error = %v, want sql.ErrNoRows", err)
+	}
+	if _, err := cat.GetVideo(ctx, "p115-115-nested-movie-file"); err != sql.ErrNoRows {
+		t.Fatalf("excluded nested movie get error = %v, want sql.ErrNoRows", err)
+	}
+	if _, err := cat.GetVideo(ctx, "p115-115-normal-file"); err != nil {
+		t.Fatalf("normal video was not added: %v", err)
+	}
+}
+
 type scannerFakeDrive struct {
 	entries []drives.Entry
 }
@@ -506,11 +565,23 @@ func (d *scannerFakeDrive) EnsureDir(context.Context, string) (string, error) {
 func (d *scannerFakeDrive) RootID() string { return "root" }
 
 type scannerTreeFakeDrive struct {
+	kind    string
+	id      string
 	entries map[string][]drives.Entry
 }
 
-func (d *scannerTreeFakeDrive) Kind() string { return "fake" }
-func (d *scannerTreeFakeDrive) ID() string   { return "drive" }
+func (d *scannerTreeFakeDrive) Kind() string {
+	if d.kind != "" {
+		return d.kind
+	}
+	return "fake"
+}
+func (d *scannerTreeFakeDrive) ID() string {
+	if d.id != "" {
+		return d.id
+	}
+	return "drive"
+}
 func (d *scannerTreeFakeDrive) Init(context.Context) error {
 	return nil
 }

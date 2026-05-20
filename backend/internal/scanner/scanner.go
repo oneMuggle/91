@@ -39,11 +39,12 @@ func New(cat *catalog.Catalog, drv drives.Drive, exts []string, maxDepth int, on
 }
 
 type Stats struct {
-	Scanned       int
-	Added         int
-	Errors        int
-	SeenFileIDs   map[string]struct{}
-	VisitedDirIDs map[string]struct{}
+	Scanned         int
+	Added           int
+	Errors          int
+	SeenFileIDs     map[string]struct{}
+	VisitedDirIDs   map[string]struct{}
+	ExcludedFileIDs map[string]struct{}
 }
 
 // Run 从 Drive.RootID 开始扫描
@@ -52,8 +53,9 @@ func (s *Scanner) Run(ctx context.Context, startDirID string) (Stats, error) {
 		startDirID = s.Drive.RootID()
 	}
 	stats := Stats{
-		SeenFileIDs:   make(map[string]struct{}),
-		VisitedDirIDs: make(map[string]struct{}),
+		SeenFileIDs:     make(map[string]struct{}),
+		VisitedDirIDs:   make(map[string]struct{}),
+		ExcludedFileIDs: make(map[string]struct{}),
 	}
 	if err := s.walk(ctx, startDirID, "", 0, &stats); err != nil {
 		return stats, err
@@ -79,6 +81,13 @@ func (s *Scanner) walk(ctx context.Context, dirID, dirName string, depth int, st
 		if e.IsDir {
 			// 跳过 previews 目录，避免扫到自己生成的 teaser
 			if strings.EqualFold(e.Name, "previews") {
+				continue
+			}
+			if s.shouldExcludeDir(e.Name) {
+				if err := s.collectExcludedFiles(ctx, e.ID, depth+1, stats); err != nil {
+					stats.Errors++
+					log.Printf("[scanner] exclude %s error: %v", e.Name, err)
+				}
 				continue
 			}
 			if err := s.walk(ctx, e.ID, e.Name, depth+1, stats); err != nil {
@@ -175,6 +184,37 @@ func (s *Scanner) walk(ctx context.Context, dirID, dirName string, depth int, st
 		stats.Added++
 		if s.OnNewVideo != nil {
 			s.OnNewVideo(v)
+		}
+	}
+	return nil
+}
+
+func (s *Scanner) shouldExcludeDir(name string) bool {
+	return s.Drive != nil &&
+		s.Drive.Kind() == "p115" &&
+		strings.TrimSpace(name) == "影视"
+}
+
+func (s *Scanner) collectExcludedFiles(ctx context.Context, dirID string, depth int, stats *Stats) error {
+	if depth >= s.MaxDepth {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	entries, err := s.Drive.List(ctx, dirID)
+	if err != nil {
+		return fmt.Errorf("list excluded %s: %w", dirID, err)
+	}
+	for _, e := range entries {
+		if e.IsDir {
+			if err := s.collectExcludedFiles(ctx, e.ID, depth+1, stats); err != nil {
+				return err
+			}
+			continue
+		}
+		if e.ID != "" {
+			stats.ExcludedFileIDs[e.ID] = struct{}{}
 		}
 	}
 	return nil

@@ -605,6 +605,14 @@ func (a *App) runScan(ctx context.Context, driveID string) {
 		return
 	}
 	log.Printf("[scan] drive=%s done scanned=%d added=%d errors=%d", driveID, stats.Scanned, stats.Added, stats.Errors)
+	if drv.Kind() == "p115" && len(stats.ExcludedFileIDs) > 0 {
+		removed, err := a.cleanupExcludedDriveVideos(ctx, driveID, stats.ExcludedFileIDs)
+		if err != nil {
+			log.Printf("[cleanup] excluded 115 videos drive=%s error: %v", driveID, err)
+		} else if removed > 0 {
+			log.Printf("[cleanup] removed %d excluded 115 videos for drive=%s", removed, driveID)
+		}
+	}
 	if drv.Kind() == "pikpak" {
 		if stats.Errors > 0 {
 			log.Printf("[cleanup] skip stale PikPak cleanup for drive=%s: scan had %d directory errors", driveID, stats.Errors)
@@ -618,6 +626,35 @@ func (a *App) runScan(ctx context.Context, driveID string) {
 		}
 	}
 	a.enqueueDriveGeneration(ctx, driveID, worker, thumbWorker)
+}
+
+func (a *App) cleanupExcludedDriveVideos(ctx context.Context, driveID string, excludedFileIDs map[string]struct{}) (int, error) {
+	if len(excludedFileIDs) == 0 {
+		return 0, nil
+	}
+	items, err := a.cat.ListVideosByDrive(ctx, driveID)
+	if err != nil {
+		return 0, err
+	}
+
+	localDir := ""
+	if a.cfg != nil {
+		localDir = a.cfg.Storage.LocalPreviewDir
+	}
+	removed := 0
+	for _, v := range items {
+		if _, ok := excludedFileIDs[v.FileID]; !ok {
+			continue
+		}
+		if err := removeLocalVideoAssets(localDir, v); err != nil {
+			return removed, fmt.Errorf("remove local assets for %s: %w", v.ID, err)
+		}
+		if err := a.cat.DeleteVideo(ctx, v.ID); err != nil {
+			return removed, fmt.Errorf("delete catalog video %s: %w", v.ID, err)
+		}
+		removed++
+	}
+	return removed, nil
 }
 
 func (a *App) cleanupMissingDriveVideos(ctx context.Context, driveID string, liveFileIDs map[string]struct{}, visitedDirIDs map[string]struct{}, fullDriveScan bool) (int, error) {

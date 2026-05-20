@@ -517,6 +517,7 @@ func (g *Generator) generateSequential(ctx context.Context, duration float64, li
 
 	candidates := teaserCandidateStarts(duration, starts, eachSec)
 	targetSegments := len(starts)
+	requiredSegments := requiredTeaserSegments(duration, targetSegments)
 	var lastErr error
 	for i, start := range candidates {
 		if len(segmentPaths) >= targetSegments {
@@ -532,13 +533,7 @@ func (g *Generator) generateSequential(ctx context.Context, duration float64, li
 		}
 		segmentPaths = append(segmentPaths, seg)
 	}
-	if len(segmentPaths) == 0 {
-		if lastErr != nil {
-			return "", lastErr
-		}
-		return "", errors.New("no usable teaser segment")
-	}
-	if len(segmentPaths) < targetSegments {
+	if len(segmentPaths) < requiredSegments {
 		if lastErr != nil {
 			return "", fmt.Errorf("only generated %d/%d teaser segments: %w", len(segmentPaths), targetSegments, lastErr)
 		}
@@ -605,6 +600,16 @@ func (g *Generator) generateSequential(ctx context.Context, duration float64, li
 	}
 	success = true
 	return tmpPath, nil
+}
+
+func requiredTeaserSegments(duration float64, targetSegments int) int {
+	if targetSegments <= 0 {
+		return 0
+	}
+	if duration > 0 && duration < 30 {
+		return 1
+	}
+	return targetSegments
 }
 
 func (g *Generator) generateSingleSegment(ctx context.Context, index int, start, eachSec float64, linkForInput func(int) (*drives.StreamLink, error)) (string, error) {

@@ -130,6 +130,24 @@ func TestTeaserSegmentFallbackRequiresPlannedSegmentCount(t *testing.T) {
 	}
 }
 
+func TestShortVideoRequiresOnlyOneUsableTeaserSegment(t *testing.T) {
+	if got := requiredTeaserSegments(12, 3); got != 1 {
+		t.Fatalf("required segments = %d, want 1 for short video", got)
+	}
+	if got := requiredTeaserSegments(29.999, 3); got != 1 {
+		t.Fatalf("required segments = %d, want 1 below 30 seconds", got)
+	}
+}
+
+func TestMediumAndLongVideosStillRequirePlannedTeaserSegments(t *testing.T) {
+	if got := requiredTeaserSegments(30, 4); got != 4 {
+		t.Fatalf("required segments = %d, want planned count at 30 seconds", got)
+	}
+	if got := requiredTeaserSegments(204, 4); got != 4 {
+		t.Fatalf("required segments = %d, want planned count for longer video", got)
+	}
+}
+
 func TestThumbnailOffsetsUseFiveSecondsWithEarlyFallbacks(t *testing.T) {
 	got := thumbnailOffsets()
 	want := []float64{5, 1, 0}
