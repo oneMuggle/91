@@ -23,4 +23,4 @@ tools/
 
 # 编译产物
 backend/server
-
+tsconfig.tsbuildinfo
