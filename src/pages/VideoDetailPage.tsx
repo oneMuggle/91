@@ -3,6 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { AppShell } from "@/components/AppShell";
 import { VideoPlayer } from "@/components/VideoPlayer";
 import { VideoActions } from "@/components/VideoActions";
+import { VideoMetaHeader } from "@/components/VideoMetaHeader";
 import { VideoInfoPanel } from "@/components/VideoInfoPanel";
 import { RecommendedRail } from "@/components/RecommendedRail";
 import {
@@ -77,20 +78,18 @@ export default function VideoDetailPage() {
 
   function handleFirstPlay() {
     if (!detail) return;
-    const id = detail.id;
     // 失败静默忽略，不打扰用户播放体验
-    recordView(id).catch(() => undefined);
+    recordView(detail.id).catch(() => undefined);
   }
 
   if (loading) {
     return (
       <AppShell>
         <div className="container page-section">
-          <div className="video-grid-loading">
-            <div className="skeleton-card" />
-            <div className="skeleton-card" />
-            <div className="skeleton-card" />
-            <div className="skeleton-card" />
+          <div className="vd-skeleton">
+            <div className="vd-skeleton__player" />
+            <div className="vd-skeleton__title" />
+            <div className="vd-skeleton__meta" />
           </div>
         </div>
       </AppShell>
@@ -101,7 +100,7 @@ export default function VideoDetailPage() {
     return (
       <AppShell>
         <div className="container page-section">
-          <div className="video-grid-empty">视频不存在或已被移除</div>
+          <div className="vd-empty">视频不存在或已被移除</div>
         </div>
       </AppShell>
     );
@@ -109,11 +108,10 @@ export default function VideoDetailPage() {
 
   return (
     <AppShell>
-      <div className="container page-section">
-        <div className="detail-layout">
-          <div className="detail-main" ref={detailTopRef}>
-            {/* 顶置影院式悬浮播放器 */}
-            <div className="detail-player-card">
+      <div className="container page-section vd-page">
+        <div className="vd-layout">
+          <div className="vd-main" ref={detailTopRef}>
+            <div className="vd-player">
               <VideoPlayer
                 src={detail.videoSrc}
                 poster={detail.poster}
@@ -122,8 +120,9 @@ export default function VideoDetailPage() {
               />
             </div>
 
-            {/* 动作区 */}
-            <div className="detail-actions-row">
+            <VideoMetaHeader video={detail} />
+
+            <div className="vd-toolbar">
               <VideoActions
                 video={detail}
                 onHideVideo={handleHideVideo}
@@ -131,7 +130,6 @@ export default function VideoDetailPage() {
               />
             </div>
 
-            {/* 磨砂元数据展板 */}
             <VideoInfoPanel
               video={detail}
               availableTags={tags}
@@ -139,11 +137,10 @@ export default function VideoDetailPage() {
               onTagsChange={handleTagsChange}
             />
           </div>
+
           <RecommendedRail videos={detail.relatedVideos} />
         </div>
       </div>
-
-      <div style={{ height: 40 }} />
     </AppShell>
   );
 }

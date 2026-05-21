@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
+import { Plus, X } from "lucide-react";
 import type { TagItem, VideoDetail } from "@/types";
-import { formatCount } from "@/lib/format";
 
 type Props = {
   video: VideoDetail;
@@ -9,6 +9,11 @@ type Props = {
   onTagsChange?: (tags: string[]) => Promise<void>;
 };
 
+/**
+ * 视频信息板块：
+ * - 简介：默认折叠 3 行，整块可点击展开/收起。简介为空时不渲染。
+ * - 标签：横向 chip 列表 + 一个圆形 "+" 按钮调出编辑器；编辑器内仅展示候选标签的 checkbox 网格。
+ */
 export function VideoInfoPanel({
   video,
   availableTags = [],
@@ -18,12 +23,31 @@ export function VideoInfoPanel({
   const [editingTags, setEditingTags] = useState(false);
   const [draftTags, setDraftTags] = useState<string[]>(video.tags ?? []);
   const [tagError, setTagError] = useState("");
-  const [descCollapsed, setDescCollapsed] = useState(true);
+  const [descExpanded, setDescExpanded] = useState(false);
+
+  const tags = video.tags ?? [];
+  const description = (video.description ?? "").trim();
+  const showDescription = description.length > 0;
+  const descriptionLong = description.length > 80 || description.includes("\n");
+
+  const sortedAvailable = useMemo(() => {
+    return [...availableTags].sort((a, b) => {
+      const ac = a.count ?? 0;
+      const bc = b.count ?? 0;
+      if (bc !== ac) return bc - ac;
+      return a.label.localeCompare(b.label, "zh-Hans-CN");
+    });
+  }, [availableTags]);
 
   function openTagEditor() {
-    setDraftTags(video.tags ?? []);
+    setDraftTags(tags);
     setTagError("");
     setEditingTags(true);
+  }
+
+  function closeTagEditor() {
+    setEditingTags(false);
+    setTagError("");
   }
 
   async function saveTags() {
@@ -38,118 +62,121 @@ export function VideoInfoPanel({
   }
 
   return (
-    <section className="info-panel" aria-label="视频信息">
-      <header className="info-panel__header">视频详细参数</header>
-      <div className="info-panel__body">
-        <div className="info-row">
-          <span className="info-row__label">发布时间</span>
-          <span className="info-row__value">{video.publishedAt}</span>
+    <section className="vd-info" aria-label="视频信息">
+      {showDescription && (
+        <div
+          className={`vd-info__desc ${descExpanded ? "is-expanded" : ""} ${
+            descriptionLong ? "is-clickable" : ""
+          }`}
+          role={descriptionLong ? "button" : undefined}
+          tabIndex={descriptionLong ? 0 : undefined}
+          onClick={() => descriptionLong && setDescExpanded((v) => !v)}
+          onKeyDown={(e) => {
+            if (!descriptionLong) return;
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              setDescExpanded((v) => !v);
+            }
+          }}
+        >
+          <p className="vd-info__desc-text">{description}</p>
+          {descriptionLong && (
+            <span className="vd-info__desc-toggle">
+              {descExpanded ? "收起" : "展开"}
+            </span>
+          )}
         </div>
+      )}
 
-        <div className="info-row">
-          <span className="info-row__label">发布作者</span>
-          <span className="info-row__value">{video.author || video.category || "影视合集"}</span>
+      <div className="vd-info__tags-row">
+        <div className="vd-info__tags">
+          {tags.length === 0 && (
+            <span className="vd-info__tags-empty">暂无标签</span>
+          )}
+          {tags.map((t) => (
+            <span key={t} className="vd-tag">
+              #{t}
+            </span>
+          ))}
+          {onTagsChange && (
+            <button
+              type="button"
+              className="vd-info__tags-edit"
+              onClick={openTagEditor}
+              aria-label="编辑标签"
+            >
+              <Plus size={14} />
+              <span>编辑</span>
+            </button>
+          )}
         </div>
+      </div>
 
-        <div className="info-row">
-          <span className="info-row__label">播放次数</span>
-          <span className="info-row__value">{formatCount(video.views)} 次观看</span>
-        </div>
+      {editingTags && (
+        <div className="vd-tag-editor" role="dialog" aria-label="编辑视频标签">
+          <header className="vd-tag-editor__head">
+            <span>选择适用的标签</span>
+            <button
+              type="button"
+              className="vd-tag-editor__close"
+              onClick={closeTagEditor}
+              aria-label="关闭"
+            >
+              <X size={16} />
+            </button>
+          </header>
 
-        <div className="info-row">
-          <span className="info-row__label">画面品质</span>
-          <span className="info-row__value">{video.quality || "HD 1080P"}</span>
-        </div>
-
-        {video.sourceLabel && (
-          <div className="info-row">
-            <span className="info-row__label">来源网盘</span>
-            <span className="info-row__value">{video.sourceLabel}</span>
-          </div>
-        )}
-
-        <div className="info-row">
-          <span className="info-row__label">视频时长</span>
-          <span className="info-row__value">{video.duration || "未知"}</span>
-        </div>
-
-        {/* 标签行 - 满宽 */}
-        <div className="info-row is-tags-row">
-          <span className="info-row__label">视频标签</span>
-          <div className="info-row__value">
-            <div className="detail-tags">
-              {(video.tags ?? []).map((t) => (
-                <span key={t} className="tag-chip">
-                  {t}
-                </span>
-              ))}
-              {onTagsChange && (
-                <button className="detail-tags__edit" onClick={openTagEditor}>
-                  修改标签
-                </button>
-              )}
-            </div>
-            {editingTags && (
-              <div className="detail-tag-editor">
-                <div className="detail-tag-editor__grid">
-                  {availableTags.map((tag) => (
-                    <label key={tag.id} className="detail-tag-editor__item">
-                      <input
-                        type="checkbox"
-                        checked={draftTags.includes(tag.label)}
-                        onChange={() => setDraftTags(toggleTag(draftTags, tag.label))}
-                      />
-                      <span>{tag.label}</span>
-                      {typeof tag.count === "number" && <em>({tag.count})</em>}
-                    </label>
-                  ))}
-                </div>
-                {tagError && <div className="detail-tag-editor__error">{tagError}</div>}
-                <div className="detail-tag-editor__actions">
-                  <button onClick={() => setEditingTags(false)}>取消</button>
-                  <button onClick={saveTags} disabled={tagSaving}>
-                    {tagSaving ? "保存中..." : "保存修改"}
+          <div className="vd-tag-editor__grid">
+            {sortedAvailable.length === 0 ? (
+              <div className="vd-tag-editor__empty">暂无可用标签</div>
+            ) : (
+              sortedAvailable.map((tag) => {
+                const checked = draftTags.includes(tag.label);
+                return (
+                  <button
+                    type="button"
+                    key={tag.id}
+                    className={`vd-tag-editor__chip ${checked ? "is-active" : ""}`}
+                    onClick={() =>
+                      setDraftTags((prev) =>
+                        prev.includes(tag.label)
+                          ? prev.filter((t) => t !== tag.label)
+                          : [...prev, tag.label]
+                      )
+                    }
+                    aria-pressed={checked}
+                  >
+                    <span>{tag.label}</span>
+                    {typeof tag.count === "number" && (
+                      <em>{tag.count}</em>
+                    )}
                   </button>
-                </div>
-              </div>
+                );
+              })
             )}
           </div>
-        </div>
 
-        {/* 描述行 - Collapsible */}
-        {video.description && (
-          <div 
-            className="info-row" 
-            style={{ 
-              gridColumn: "1 / -1", 
-              borderTop: "1px dashed rgba(255, 255, 255, 0.06)", 
-              paddingTop: "var(--space-4)" 
-            }}
-          >
-            <span className="info-row__label">视频简介</span>
-            <div className="info-row__value" style={{ position: "relative" }}>
-              <p className={`description ${descCollapsed ? "is-collapsed" : ""}`} style={{ margin: 0 }}>
-                {video.description}
-              </p>
-              {video.description.length > 120 && (
-                <button 
-                  className="description-toggle" 
-                  onClick={() => setDescCollapsed(!descCollapsed)}
-                  style={{ border: 0, padding: 0, marginTop: "6px" }}
-                >
-                  {descCollapsed ? "展开全部介绍 ↓" : "收起介绍 ↑"}
-                </button>
-              )}
-            </div>
+          {tagError && <div className="vd-tag-editor__error">{tagError}</div>}
+
+          <div className="vd-tag-editor__actions">
+            <button
+              type="button"
+              className="vd-tag-editor__btn"
+              onClick={closeTagEditor}
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              className="vd-tag-editor__btn is-primary"
+              onClick={saveTags}
+              disabled={tagSaving}
+            >
+              {tagSaving ? "保存中..." : "保存"}
+            </button>
           </div>
-        )}
-      </div>
+        </div>
+      )}
     </section>
   );
-}
-
-function toggleTag(tags: string[], label: string): string[] {
-  return tags.includes(label)
-    ? tags.filter((tag) => tag !== label)
-    : [...tags, label];
 }
