@@ -19,7 +19,7 @@ import (
 	"github.com/video-site/backend/internal/proxy"
 )
 
-func TestVideoSourceUsesTranscodeForAvi(t *testing.T) {
+func TestVideoSourceUsesDirectStreamForAvi(t *testing.T) {
 	v := &catalog.Video{
 		ID:      "video-1",
 		DriveID: "drive-1",
@@ -29,8 +29,23 @@ func TestVideoSourceUsesTranscodeForAvi(t *testing.T) {
 
 	got := videoSource(v)
 
-	if got != "/p/transcode/video-1" {
-		t.Fatalf("video source = %q, want transcode route", got)
+	if got != "/p/stream/drive-1/file-1" {
+		t.Fatalf("video source = %q, want direct stream route", got)
+	}
+}
+
+func TestVideoSourceUsesDirectStreamForMkv(t *testing.T) {
+	v := &catalog.Video{
+		ID:      "video-1",
+		DriveID: "drive-1",
+		FileID:  "file-1",
+		Ext:     "mkv",
+	}
+
+	got := videoSource(v)
+
+	if got != "/p/stream/drive-1/file-1" {
+		t.Fatalf("video source = %q, want direct stream route", got)
 	}
 }
 
@@ -299,40 +314,6 @@ func TestHandlePreviewIgnoresRemotePreviewFileIDAndServesLocalFile(t *testing.T)
 	}
 	if got := rr.Header().Get("Cache-Control"); got != "no-store" {
 		t.Fatalf("Cache-Control = %q, want no-store", got)
-	}
-}
-
-func TestTranscodeStatusReadyWhenCachedFileExists(t *testing.T) {
-	s := &Server{LocalDir: t.TempDir()}
-	videoID := "video-1"
-	path := s.transcodePath(videoID)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatalf("mkdir cache dir: %v", err)
-	}
-	if err := os.WriteFile(path, []byte("mp4"), 0o644); err != nil {
-		t.Fatalf("write cache file: %v", err)
-	}
-
-	if got := s.transcodeStatus(videoID); got != "ready" {
-		t.Fatalf("status = %q, want ready", got)
-	}
-}
-
-func TestTranscodeStatusProcessingWhenJobActive(t *testing.T) {
-	s := &Server{LocalDir: t.TempDir()}
-	videoID := "video-1"
-	s.setTranscoding(videoID, true)
-
-	if got := s.transcodeStatus(videoID); got != "processing" {
-		t.Fatalf("status = %q, want processing", got)
-	}
-}
-
-func TestTranscodeTempPathKeepsMp4Extension(t *testing.T) {
-	s := &Server{LocalDir: t.TempDir()}
-
-	if got := s.transcodeTempPath("video-1"); !strings.HasSuffix(got, ".mp4") {
-		t.Fatalf("temp transcode path = %q, want .mp4 suffix for ffmpeg muxer detection", got)
 	}
 }
 

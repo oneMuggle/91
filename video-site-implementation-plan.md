@@ -1318,7 +1318,7 @@ src/
 
 不变项：
 
-- 所有数据请求 (`fetchVideoDetail` / `fetchTags` / `recordView` / `updateVideoTags` / `hideVideo`) 和 `like` API 调用、点踩本地 state、转码轮询逻辑都未改动。
+- 所有数据请求 (`fetchVideoDetail` / `fetchTags` / `recordView` / `updateVideoTags` / `hideVideo`) 和 `like` API 调用、点踩本地 state 都未改动。
 - 不引入新依赖，颜色全部走 `tokens.css`，未使用 `!important`。
 - `lint` (`tsc --noEmit`) 和 `build` (`tsc -b && vite build`) 均通过。
 
@@ -1679,3 +1679,213 @@ Teaser 不再是"固定从第 10 秒抽 10 秒"，改为按视频时长分段挑
 **已知不在本次范围**：
 - `/admin/api/tags` 仍只有 `GET` / `POST`，没有 `DELETE`。如果将来要让管理员手动删 `user` 标签，再加 endpoint。
 - 数据迁移：上线时对运行中数据库一次性执行同样的 `DELETE` 即可（已对当前实例执行：清掉 10 条 `Season N` / `Better Call Saul SXX` / `东京爱情故事（1991）`，`tags` 总数 153 → 143）。
+
+### 14.7 取消浏览器内本机转码，全部走 302 直链 + VLC 外部播放器按钮（2026-05-21）
+
+**背景**：之前对 `.avi` / `.mkv` 视频前端会拿到 `/p/transcode/<videoID>` 路径，详情页轮询 `/status` + `POST /start`，后端用 ffmpeg 重编码（`-c:v libx264 -c:a aac -movflags +faststart`）整个文件落盘到 `backend/data/previews/transcodes/<videoID>.mp4`，再让 `<video>` 加载。问题：
+
+- 完整重编码代价大，2 小时影片 `veryfast` 也要数分钟，期间用户只看到"正在准备可快进版本…"。
+- transcodes 目录持续累积（实测 69 MB / 几百个文件），没有清理策略。
+- 多用户并发触发不同 mkv 时会同时跑多个 ffmpeg 进程，没有并发上限保护。
+- mkv 容器里 90% 是 H.264+AAC，本可 remux 秒级完成，但旧实现一律重编码，浪费严重。
+
+**决策**：直接放弃浏览器内播放 mkv/avi 的尝试，所有视频统一走 `/p/stream/<driveID>/<fileID>`（即网盘直链 302）；浏览器原生不支持的格式（avi、部分 mkv）让用户用外部播放器（默认 VLC）打开。
+
+**改动**：
+
+- `backend/internal/api/api.go`
+  - `videoSource(v)` 不再分支：所有非本地上传视频统一返回 `/p/stream/<driveID>/<fileID>`，本地上传仍走 `/p/upload/<videoID>`。
+  - 删除 `/p/transcode/{videoID}`、`/p/transcode/{videoID}/start`、`/p/transcode/{videoID}/status` 三个路由及 `handleTranscode` / `handleTranscodeStart` / `handleTranscodeStatus`。
+  - 删除 `startTranscode` / `generateTranscode` / `transcodeStatus` / `setTranscoding` / `transcodePath` / `transcodeTempPath` / `needsBrowserTranscode` / `buildFFmpegHeaders` 这一组辅助。
+  - `Server` 结构体去掉 `transcodeMu` / `transcodeJobs` / `FFmpegPath`（preview worker 仍走 `preview.Config.FFmpegPath`）。
+  - 清理 `log` / `os/exec` / `sync` import。
+- `backend/cmd/server/main.go` `removeLocalVideoAssets` 不再清理 `transcodes/` 路径（目录已删，新建无需求）。
+- `src/components/VideoPlayer.tsx` 删除 transcode 检测、`/status` 轮询、"正在准备可快进版本…"提示，简化为直接用 `src` 喂 `<video>`。
+- `src/components/VideoActions.tsx` 在工具条内新增"VLC 打开"按钮：链接为 `vlc://${window.location.origin}${video.videoSrc}`，所有视频都显示，不区分扩展名（mp4 用户也可选择用 VLC 打开本地播放）。
+- `src/styles/video-detail.css` 给 `.vd-actions__vlc` 加 accent 色 hover，与 `.vd-actions__hide`（danger）区分；`margin-left:auto` 从 hide 移到 vlc，hide 紧随 vlc 排列。
+
+**测试同步**：
+
+- `backend/internal/api/api_test.go`：`TestVideoSourceUsesTranscodeForAvi` 改名 `TestVideoSourceUsesDirectStreamForAvi`，断言 avi 也走 `/p/stream/`；删除 `TestTranscodeStatusReadyWhenCachedFileExists` / `TestTranscodeStatusProcessingWhenJobActive` / `TestTranscodeTempPathKeepsMp4Extension`。
+- `backend/cmd/server/main_test.go` 清理用例里的 `obsoleteTranscode` / `obsoleteTranscodeTmp` 样本和断言。
+
+**清理已有数据**：上线时执行一次 `rm -rf backend/data/previews/transcodes/`（本次回收 69 MB）。
+
+**用户体验权衡**：
+
+- mp4 / webm 等浏览器原生支持的容器：体验不变，仍是 `<video>` + 302 直链 Range。
+- mkv（即使内编码是 H.264）/ avi：浏览器多数情况下显示无法播放，用户点"VLC 打开"调起本机 VLC（需用户允许浏览器调起 `vlc://` 协议）。手机端 VLC 可能不支持自定义 scheme。
+- 如果将来要把这部分也吃下来，可以再做"先 ffprobe 探测，能 remux 就 `-c copy`"或 HLS 边转边播。本次保留"零本机转码"的简单方案。
+
+**代码位置**：
+- `backend/internal/api/api.go`、`backend/cmd/server/main.go`、`backend/internal/api/api_test.go`、`backend/cmd/server/main_test.go`
+- `src/components/VideoPlayer.tsx`、`src/components/VideoActions.tsx`、`src/styles/video-detail.css`
+
+**补丁：VLC 按钮改为 token 签名 + 强制 proxy 转发（2026-05-22）**
+
+最初实现是 `vlc://${origin}/p/stream/<driveID>/<fileID>` 直跳，但有两个致命问题：
+
+1. `/p/stream/...` 在鉴权 group 里要求 `vs_admin` cookie，VLC 没 cookie 永远 401。
+2. 就算去掉鉴权，p115 走的是 302 → 115 CDN，VLC 的 UA `VLC/3.x` 不一定能通过 115 风控。
+
+新链路：
+
+- `backend/internal/api/playtoken.go`：新增进程内 `playTokenStore`，30 分钟 TTL，绑定 `(token -> videoID + expires)`，consume 不立即作废以兼容 VLC 多次 Range / seek 重连，懒清理。
+- `backend/internal/api/api.go`
+  - `Server` 加 `playTokensOnce sync.Once + playTokens *playTokenStore` 懒初始化。
+  - 鉴权组里挂 `POST /api/play-token/{videoID}`，已登录用户 → 签发 `{url, expiresIn}`，url 形如 `/p/play/<id>?token=<48 字符 hex>`。
+  - 鉴权组外挂 `GET /p/play/{videoID}`，handler 内部用 query token 校验，命中后强制走 `Proxy.ServeStreamProxied`（不 302），本地上传分支用 `http.ServeFile`。
+- `backend/internal/proxy/proxy.go` 新增 `ServeStreamProxied`：复用 `getLink` + `serve`，但跳过 `shouldRedirect` 分支，让 115 等也走本机代理（携带正确的 cookie / UA / Referer），客户端只跟我们服务器对话。
+- `src/components/VideoActions.tsx` `handleOpenInVlc`：preventDefault 后异步 `POST /api/play-token/<id>`（带 credentials），拿到 `{url}` 后跳 `vlc://${origin}${url}`；按钮文案在请求中显示"生成中…"。
+
+测试：`backend/internal/api/playtoken_test.go` 覆盖 issue/consume、跨视频拒绝、过期拒绝、空输入拒绝四条。
+
+**后续可选**：
+- 如果要做"看一次就失效"的严格模式，把 `consume` 改成 delete-on-success；要权衡 VLC seek 行为。
+- 如果担心进程内 map 在重启后丢失 token，可以挪到 SQLite 一张轻表里。当前每次启动 0 token，用户重新点"VLC 打开"即可。
+
+**追加补丁：改回 302 直链，节省服务器带宽（2026-05-22）**
+
+参考 OpenList `server/handles/down.go` 的 `Down` → `redirect` 路径以及 `drivers/115/driver.go` 的 `Link` 实现：
+
+```go
+// drivers/115/driver.go
+userAgent := args.Header.Get("User-Agent")
+downloadInfo, err := d.client.DownloadWithUA(file.(*FileObj).PickCode, userAgent)
+```
+
+OpenList 之所以能给外部播放器 302 直链，是因为它把请求方的 `User-Agent` 透传到 115 SDK 签链。115 直链是 UA 绑定的——必须用调链时使用的 UA 去拉，CDN 才认。本项目已经在 `internal/drives/p115/driver.go` 实现了 `StreamURLWithHeader(ctx, fileID, header)`，并由 `proxy.getLink` 把请求 header 一路传过去，所以 302 模式天然兼容 VLC：
+
+- VLC 用自己的 UA `VLC/3.x LibVLC/3.x` 直接 GET 我们的 `/p/play/...?token=...`
+- 后端校验 token 通过后，调 `StreamURLWithHeader`，115 SDK 用 VLC 的 UA 签链
+- 我们 302 给 VLC，VLC 跟 302 后用同一个 UA 拉 CDN，CDN 校验通过
+
+**改动**：
+
+- `backend/internal/api/api.go` `handlePlayWithToken` 把 `Proxy.ServeStreamProxied(...)` 换回 `Proxy.ServeStream(...)`，对 115 而言会触发 `shouldRedirect → http.Redirect 302`。
+- `backend/internal/proxy/proxy.go` 删掉短命的 `ServeStreamProxied`，没人用；future 想再做反代仍可一行恢复。
+
+**收益**：服务器对外只传一个 302 头（约 320 字节）就退出，所有后续字节走 115 CDN，零中转流量。
+
+**实测**（用 `curl -A "VLC/3.0.18 LibVLC/3.0.18" -L`）：
+- `/p/play` → 302 → `cdnfhnfile.115cdn.net/...`
+- CDN 返回 `206 Partial Content + Content-Type video/mp4`
+- 前 16 字节正是 mp4 ftyp 盒子签名 `00 00 00 14 66 74 79 70 71 74 20 20 ...`
+
+**继承的限制**：
+- 115 直链有签名时效（约几十分钟），同一签出的 URL 长视频中途可能过期，VLC 表现是 stall / "无法继续播放"；用户需要重新点"VLC 打开"再签一次。
+- 如果哪天 115 风控收紧，开始拒绝某些 UA，可以再恢复 `ServeStreamProxied`，或者在 token store 里加 `force_proxy` 标记，少数视频走代理。
+
+
+**最终结果：14.7 整体撤销（2026-05-22）**
+
+实测体验差：
+
+- vlc:// 协议在多数浏览器/系统里无显式注册，按钮像没反应；
+- 即便弹浮层让用户复制 URL 自行打开 VLC，仍属"换个工具看视频"，跟"在网站上看"的体验差距大；
+- 用户对此普遍不接受。
+
+最终选择**撤销 VLC 这一整套**，并选择保留 transcode 兼容层但改为智能模式（见 14.8）。本节保留作为决策记录与坑位说明。
+
+撤销内容：
+
+- 后端：删 `internal/api/playtoken.go` / `playtoken_test.go`；`Server` 的 `playTokens` 字段和懒初始化；`handleIssuePlayToken` / `handlePlayWithToken`；`/api/play-token/{videoID}` 和 `/p/play/{videoID}` 两个路由；不再需要的 `sync` import。
+- 前端：`VideoActions.tsx` 删 VLC 按钮 + 浮层 + 相关 state（`vlcLoading` / `vlcUrl` / `vlcCopied`）+ 4 个 handler；`video-detail.css` 删 `.vd-actions__vlc` 和 `.vd-vlc-modal` 全部样式。
+
+### 14.8 ffprobe 智能转码：能 remux 就 remux（2026-05-22）
+
+**背景**：14.7 撤销前曾把 mkv / avi 一律走 ffmpeg `libx264 + aac` 完整重编码，2 小时电影要 3-10 分钟。但 mkv 容器里 80-90% 装的是 H.264 + AAC，本来只换个壳（mp4）就能播。
+
+**决策**：保留 `/p/transcode/{videoID}` 兼容层，但 generateTranscode 流程改为：
+
+1. `drv.StreamURL` 拿网盘直链
+2. `probeCodecs` 用 ffprobe 探测 video / audio codec
+3. `chooseTranscodeArgs` 决定 `-c:v` / `-c:a`：
+   - 视频和音频都浏览器支持 → 都 `copy`（**remux**，几十秒）
+   - 仅视频支持 → `-c:v copy -c:a aac`（**audio**，1-2 分钟）
+   - 视频不支持 → `-c:v libx264 -c:a aac`（**encode**，几分钟）
+4. `setTranscodeMode` 把模式写回 `transcodeJobs`，前端 status 接口能读到
+5. ffmpeg 写 `.tmp.mp4` → rename 成 `.mp4`
+
+**浏览器支持白名单**（保守）：
+
+```go
+browserSupportedVideo: h264, avc1
+browserSupportedAudio: aac, mp4a, mp3
+```
+
+HEVC / VP9 / AV1 当作"不支持"（Chrome / Firefox 默认不行，宁可重编也不留黑屏风险）。
+ac3 / dts / flac / opus / vorbis 一律重编 aac（音频码率小，1-2 分钟搞定）。
+
+**新增文件**：`backend/internal/api/transcode.go`
+- `probedCodecs` / `probeCodecs(ctx, ffprobePath, link)` - 用 `ffprobe -of json -show_streams -select_streams v:0,a:0` 解析 JSON，传 `link.Headers` 应付 115 等盘的请求头校验。
+- `chooseTranscodeArgs(probedCodecs)` - 三档策略
+- `browserSupportedVideo / Audio` - 白名单
+- `buildFFmpegHeaders` - 把 http.Header 序列化成 ffmpeg `-headers` 字符串
+
+**`Server` 改动**：
+- 加 `FFprobePath string` 字段（main.go 从 `cfg.Preview.FFprobePath` 注入）
+- 把 `transcodeJobs` 从 `map[string]bool` 改为 `map[string]*transcodeJob`，job 带 `mode` 字段供前端轮询读取
+- 增加 `transcodeMode(videoID)` / `setTranscodeMode(videoID, mode)` / `clearTranscodeJob(videoID)` helpers
+- handleTranscode / Status / Start 返回 `{status, mode}` 两字段
+
+**前端 `VideoPlayer.tsx`**：
+- 轮询 `${src}/status` 现在能拿到 `mode`，文案根据 mode 区分：
+  - `remux` → "正在准备播放（仅换容器，几十秒）…"
+  - `audio` → "正在重新封装并转换音轨（约 1-2 分钟）…"
+  - `encode` → "正在重新编码（这个视频需要完整转码，可能要几分钟）…"
+  - 空 / 未知 → "正在准备播放…"
+- 流转：第一次 GET /status，看到非 ready 就 POST /start 触发后台任务，每 3 秒再 GET /status 直到 ready 切 src。
+
+**容错**：
+- ffprobe 失败（找不到二进制 / 网盘临时风控 / JSON 异常）→ log 一条，fallback 到完整重编（`libx264 + aac`），保证用户最终能看到视频。
+- ffmpeg 失败 → 删 .tmp.mp4，goroutine 退出，下次客户端轮询再触发。
+
+**测试**：
+- `TestVideoSourceUsesTranscodeForAvi` / `TestVideoSourceUsesTranscodeForMkv`：分别断言 avi / mkv 走 `/p/transcode/<id>`
+- `TestChooseTranscodeArgs` 6 个子用例覆盖：h264+aac、h264+mp3、h264+ac3、hevc+aac、vp9+opus、空 codec
+- `TestTranscodeStatusReadyWhenCachedFileExists` / `TestTranscodeStatusReportsProcessingAndMode` / `TestTranscodeTempPathKeepsMp4Extension`：覆盖 transcodeStatus + transcodeMode + setTranscodeMode + clearTranscodeJob 全链路。
+- `cmd/server/main_test.go` 把之前删掉的 obsoleteTranscode / Tmp 两条样本和断言加回。
+
+**目前没做的**（标 backlog，看后续负载是否值得做）：
+- transcodes/ 缓存清理：没有总量上限，没有 LRU。当前每次 mkv/avi 视频被请求都会落一个 .mp4，长期累积。简单方案：定期任务删除 N 天没访问的 .mp4，或当目录超过阈值时按 mtime 清最旧的。
+- 并发上限：现在每个不同 videoID 启一个 ffmpeg；同时 5 个 mkv 会跑 5 个 ffmpeg。简单方案：semaphore 限制并发数（比如最多 2）。
+- HEVC 用户体验：仍然是几分钟等待。可考虑 HLS 边转边播。
+- 进度反馈：ffmpeg 输出 `time=00:01:23.45` 可解析，前端显示 X/Y。
+
+**代码位置**：
+- `backend/internal/api/transcode.go`、`backend/internal/api/api.go`、`backend/internal/api/api_test.go`
+- `backend/cmd/server/main.go`、`backend/cmd/server/main_test.go`
+- `src/components/VideoPlayer.tsx`
+
+**最终结果：14.8 整体撤销（2026-05-22）**
+
+实测下来对 2 核小机器（1.6 GB 内存）压力过大：
+
+- HEVC mkv 重编码时 ffmpeg 单进程吃 160% CPU（占满双核），全机 100% busy；
+- 加 `-threads 1` / `nice -n 19` / 并发 1 等限制可以缓解，但本质上"在小机器上转码 4K HEVC"这件事就不合适，再省也是几分钟全负载；
+- 同时占用 30% 内存，影响 preview worker、115 扫描、SQLite WAL 等正常负载。
+
+最终决策：**所有视频一律走 `/p/stream/<driveID>/<fileID>` 302 直链，浏览器原生不支持的 mkv/avi 用户自行选择能播的播放器**。这台机器不再做任何视频转码工作。
+
+撤销内容（与本节描述的实现完全相反）：
+
+- 删 `backend/internal/api/transcode.go`
+- `backend/internal/api/api.go`：
+  - `Server` 去掉 `FFmpegPath` / `FFprobePath` / `transcodeMu` / `transcodeJobs` 字段、`transcodeJob` 类型；
+  - 删 3 个 transcode 路由、`handleTranscode` / `handleTranscodeStatus` / `handleTranscodeStart` handler；
+  - 删 `startTranscode` / `generateTranscode`；
+  - 删 6 个 transcode helper：`transcodeStatus` / `transcodeMode` / `setTranscodeMode` / `clearTranscodeJob` / `transcodePath` / `transcodeTempPath`；
+  - 删 `needsBrowserTranscode`；
+  - `videoSource` 恢复纯 302（本地上传 `/p/upload/`，其它 `/p/stream/`）；
+  - 清理 `log` / `os/exec` / `sync` import。
+- `backend/cmd/server/main.go`：去掉 `FFmpegPath` / `FFprobePath` 注入；`removeLocalVideoAssets` 不再清理 `transcodes/` 路径。
+- `src/components/VideoPlayer.tsx`：删 transcode 检测 / `/status` 轮询 / mode 文案，简化为直接用 src 喂 `<video>`。
+- 测试：`api_test.go` 把 avi/mkv 用例改为断言走 `/p/stream/`，删 `TestChooseTranscodeArgs` / `TestTranscodeStatus*` / `TestTranscodeTempPath*`；`main_test.go` 去掉 transcodes 资产清理样本和断言。
+- 运行时：`pkill -9` 干掉残留 ffmpeg 进程，`rm -rf backend/data/previews/transcodes/`。
+
+**用户体验**：
+- mp4 / webm：体验不变。
+- mkv / avi：浏览器原生 `<video>` 多数无法播放，用户看到原生"无法播放"提示；如有需要，用户可以右键复制视频地址（302 后的 115 直链需要登录态，但这部分网页地址是 `/p/stream/<driveID>/<fileID>`，cookie 校验通过的浏览器能直接下载或在另一个具备 cookie 转发的工具里打开）。这台机器不再为 mkv/avi 做任何额外服务。
+
+至此 14.7（VLC 方案）和 14.8（ffprobe 智能转码）两条尝试都已撤销，回到"全部 302 直链"的最简实现。

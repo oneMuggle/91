@@ -438,10 +438,8 @@ func TestCleanupMissingPikPakVideosRemovesDatabaseRowsAndLocalAssets(t *testing.
 
 	obsoletePreview := filepath.Join(localDir, "obsolete.mp4")
 	obsoleteThumb := filepath.Join(localDir, "thumbs", "pikpak-PikPak-obsolete.jpg")
-	obsoleteTranscode := filepath.Join(localDir, "transcodes", "pikpak-PikPak-obsolete.mp4")
-	obsoleteTranscodeTmp := filepath.Join(localDir, "transcodes", "pikpak-PikPak-obsolete.tmp.mp4")
 	keptPreview := filepath.Join(localDir, "kept.mp4")
-	for _, path := range []string{obsoletePreview, obsoleteThumb, obsoleteTranscode, obsoleteTranscodeTmp, keptPreview} {
+	for _, path := range []string{obsoletePreview, obsoleteThumb, keptPreview} {
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			t.Fatalf("mkdir %s: %v", path, err)
 		}
@@ -504,7 +502,7 @@ func TestCleanupMissingPikPakVideosRemovesDatabaseRowsAndLocalAssets(t *testing.
 	if _, err := cat.GetVideo(ctx, "onedrive-OneDrive-obsolete"); err != nil {
 		t.Fatalf("other drive video missing after cleanup: %v", err)
 	}
-	for _, path := range []string{obsoletePreview, obsoleteThumb, obsoleteTranscode, obsoleteTranscodeTmp} {
+	for _, path := range []string{obsoletePreview, obsoleteThumb} {
 		if _, err := os.Stat(path); !os.IsNotExist(err) {
 			t.Fatalf("obsolete asset %s still exists, stat err=%v", path, err)
 		}

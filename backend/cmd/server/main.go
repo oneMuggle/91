@@ -96,7 +96,6 @@ func main() {
 		Proxy:      app.proxy,
 		LocalDir:   cfg.Storage.LocalPreviewDir,
 		UploadDir:  app.localUploadDir(),
-		FFmpegPath: cfg.Preview.FFmpegPath,
 		OnVideoUploaded: func(v *catalog.Video) {
 			app.enqueueUploadedVideo(ctx, v)
 		},
@@ -743,8 +742,6 @@ func removeLocalVideoAssets(localDir string, v *catalog.Video) error {
 		v.PreviewLocal,
 		filepath.Join(localDir, v.ID+".mp4"),
 		filepath.Join(localDir, "thumbs", v.ID+".jpg"),
-		filepath.Join(localDir, "transcodes", v.ID+".mp4"),
-		filepath.Join(localDir, "transcodes", v.ID+".tmp.mp4"),
 	}
 	seen := make(map[string]struct{}, len(candidates))
 	for _, candidate := range candidates {
