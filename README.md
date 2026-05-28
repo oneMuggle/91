@@ -69,6 +69,8 @@ sudo bash install.sh
 - 前台：`http://服务器IP:9191/`
 - 后台：`http://服务器IP:9191/admin`
 
+如果发现无法访问，可以运行 `91 restart` 重启一下项目
+
 安装后会自动创建 `91` 指令：
 
 ```bash
