@@ -1,5 +1,16 @@
+import { useState } from "react";
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
-import { HardDrive, Film, LogOut, Play, Home, Tags, Palette } from "lucide-react";
+import {
+  HardDrive,
+  Film,
+  LogOut,
+  Play,
+  Home,
+  Tags,
+  Palette,
+  RefreshCw,
+} from "lucide-react";
+import * as api from "./api";
 import { useAuth } from "./AuthContext";
 import { useToast } from "./ToastContext";
 
@@ -7,6 +18,31 @@ export function AdminLayout() {
   const { logout } = useAuth();
   const navigate = useNavigate();
   const { show } = useToast();
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
+
+  async function handleCheckUpdate() {
+    if (checkingUpdate) return;
+    setCheckingUpdate(true);
+    try {
+      const result = await api.checkUpdate();
+      if (result.hasUpdate) {
+        show(
+          `发现新版本 ${result.latestVersion}，当前 ${result.currentVersion}`,
+          "success"
+        );
+        return;
+      }
+      if (result.currentVersion === "unknown") {
+        show(`当前版本未知，GitHub 最新版本为 ${result.latestVersion}`, "info");
+        return;
+      }
+      show(`当前已是最新版本：${result.currentVersion}`, "success");
+    } catch {
+      show("检查更新失败，请稍后重试", "error");
+    } finally {
+      setCheckingUpdate(false);
+    }
+  }
 
   async function handleLogout() {
     try {
@@ -65,6 +101,14 @@ export function AdminLayout() {
           </NavLink>
         </nav>
         <div className="admin-sidebar__footer">
+          <button
+            className="admin-sidebar__check-update"
+            onClick={handleCheckUpdate}
+            disabled={checkingUpdate}
+          >
+            <RefreshCw size={14} />
+            {checkingUpdate ? "检查中" : "检查更新"}
+          </button>
           <button className="admin-sidebar__logout" onClick={handleLogout}>
             <LogOut size={14} style={{ verticalAlign: -2, marginRight: 4 }} />
             退出登录

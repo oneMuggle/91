@@ -131,9 +131,10 @@ func (r *Runner) Run(ctx context.Context) {
 	}
 }
 
-// TriggerNow asks the running loop to fire a pipeline ASAP. If a pipeline is
-// already in progress (or another trigger is already pending), the request
-// is dropped — the in-progress run will absorb the intent.
+// TriggerNow asks the running loop to fire a pipeline ASAP. The trigger channel
+// is buffered(1): if a pipeline is already in progress, one follow-up run may
+// remain pending and will start after the current run finishes. Additional
+// clicks while that follow-up is pending are ignored.
 func (r *Runner) TriggerNow() {
 	select {
 	case r.trigger <- struct{}{}:

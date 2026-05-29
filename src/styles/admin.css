@@ -121,10 +121,45 @@
   border-top: 1px solid var(--border-subtle);
 }
 
+.admin-sidebar__check-update {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 34px;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-size: var(--font-sm);
+  font-weight: var(--weight-medium);
+  text-align: left;
+}
+
+.admin-sidebar__check-update:hover:not(:disabled) {
+  color: var(--text-strong);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.admin-sidebar__check-update:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+.admin-sidebar__check-update:disabled svg {
+  animation: admin-update-spin 0.9s linear infinite;
+}
+
+@keyframes admin-update-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .admin-sidebar__logout {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  width: 100%;
   padding: 8px 12px;
   margin-top: 8px;
   border-radius: var(--radius-sm);

@@ -5,9 +5,12 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -18,6 +21,13 @@ import (
 type AdminServer struct {
 	Catalog *catalog.Catalog
 	Auth    *auth.Authenticator
+	// VersionFilePath points to the installer-written .version file.
+	VersionFilePath string
+	// GitHubRepo is the owner/name repo used for update checks.
+	GitHubRepo string
+	// ReleaseAPIURL and HTTPClient are injectable for tests. Production code leaves them empty.
+	ReleaseAPIURL string
+	HTTPClient    *http.Client
 	// SetupRequired 表示当前是否仍处于首次部署初始化状态。
 	SetupRequired func() bool
 	// OnSetup 持久化首次部署时设置的管理员账号密码，并更新运行中认证器。
@@ -45,7 +55,7 @@ type AdminServer struct {
 	SetSpider91UploadDriveID func(driveID string) error
 	// OnRunNightlyJob 触发一次完整的凌晨流水线（Phase1 扫盘 + Phase2 91 爬虫 +
 	// Phase3 迁移）。立即返回 —— 实际任务在后台跑，admin 在日志或下次状态查询里
-	// 看进度。重复点击会被 Runner.TryLock 丢弃。
+	// 看进度。若流水线正在跑，Runner 最多保留一个待触发请求，当前轮结束后再跑一轮。
 	OnRunNightlyJob func()
 	// ListDriveDirChildren 列出某个 drive 在 parentID 目录下的直接子目录。
 	// parentID 为空时使用 drive 的 RootID。返回 (子目录列表, error)。
@@ -112,9 +122,23 @@ func (a *AdminServer) Register(r chi.Router) {
 			r.Put("/settings", a.handlePutSettings)
 
 			// 运维任务
+			r.Get("/update/check", a.handleCheckUpdate)
 			r.Post("/jobs/nightly/run", a.handleRunNightlyJob)
 		})
 	})
+}
+
+type updateCheckDTO struct {
+	CurrentVersion string `json:"currentVersion"`
+	LatestVersion  string `json:"latestVersion"`
+	HasUpdate      bool   `json:"hasUpdate"`
+	ReleaseURL     string `json:"releaseUrl,omitempty"`
+	CheckedAt      string `json:"checkedAt"`
+}
+
+type githubReleaseDTO struct {
+	TagName string `json:"tag_name"`
+	HTMLURL string `json:"html_url"`
 }
 
 type loginReq struct {
@@ -219,6 +243,91 @@ func (a *AdminServer) handleMe(w http.ResponseWriter, r *http.Request) {
 	}
 	ok, _ := a.Catalog.ValidateSession(r.Context(), c.Value)
 	writeJSON(w, http.StatusOK, map[string]any{"authenticated": ok})
+}
+
+func (a *AdminServer) handleCheckUpdate(w http.ResponseWriter, r *http.Request) {
+	info, err := a.checkUpdate(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, info)
+}
+
+func (a *AdminServer) checkUpdate(ctx context.Context) (updateCheckDTO, error) {
+	current := a.installedVersion()
+	if current == "" {
+		current = "unknown"
+	}
+	release, err := a.latestRelease(ctx)
+	if err != nil {
+		return updateCheckDTO{
+			CurrentVersion: current,
+			CheckedAt:      time.Now().Format(time.RFC3339),
+		}, err
+	}
+	latest := strings.TrimSpace(release.TagName)
+	return updateCheckDTO{
+		CurrentVersion: current,
+		LatestVersion:  latest,
+		HasUpdate:      current != "unknown" && latest != "" && current != latest,
+		ReleaseURL:     release.HTMLURL,
+		CheckedAt:      time.Now().Format(time.RFC3339),
+	}, nil
+}
+
+func (a *AdminServer) installedVersion() string {
+	path := strings.TrimSpace(a.VersionFilePath)
+	if path == "" {
+		path = ".version"
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	lines := strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n")
+	if len(lines) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(lines[0])
+}
+
+func (a *AdminServer) latestRelease(ctx context.Context) (githubReleaseDTO, error) {
+	url := strings.TrimSpace(a.ReleaseAPIURL)
+	if url == "" {
+		repo := strings.TrimSpace(a.GitHubRepo)
+		if repo == "" {
+			repo = "nianzhibai/91"
+		}
+		url = "https://api.github.com/repos/" + repo + "/releases/latest"
+	}
+	client := a.HTTPClient
+	if client == nil {
+		client = &http.Client{Timeout: 8 * time.Second}
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return githubReleaseDTO{}, err
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("User-Agent", "video-site-91")
+	res, err := client.Do(req)
+	if err != nil {
+		return githubReleaseDTO{}, err
+	}
+	defer res.Body.Close()
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		return githubReleaseDTO{}, fmt.Errorf("github release check failed: HTTP %d", res.StatusCode)
+	}
+	var release githubReleaseDTO
+	if err := json.NewDecoder(res.Body).Decode(&release); err != nil {
+		return githubReleaseDTO{}, err
+	}
+	if strings.TrimSpace(release.TagName) == "" {
+		return githubReleaseDTO{}, errors.New("github release check returned empty tag")
+	}
+	return release, nil
 }
 
 func (a *AdminServer) handleListDrives(w http.ResponseWriter, r *http.Request) {
@@ -425,7 +534,7 @@ func (a *AdminServer) handleRescan(w http.ResponseWriter, r *http.Request) {
 
 // handleRunNightlyJob 触发一次完整的凌晨流水线（不论当前时间，不论今日是否已跑）。
 // 立即返回 202；进度通过 backend 日志和下次 GET /admin/api/drives 的状态变化观察。
-// 流水线已在跑时 Runner 会丢弃此次触发并记日志。
+// 流水线已在跑时 Runner 最多排队一个后续触发；如果已有待触发请求，新的点击会被忽略。
 func (a *AdminServer) handleRunNightlyJob(w http.ResponseWriter, r *http.Request) {
 	if a.OnRunNightlyJob != nil {
 		a.OnRunNightlyJob()

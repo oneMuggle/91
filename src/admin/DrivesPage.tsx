@@ -232,7 +232,7 @@ export function DrivesPage() {
   /**
    * 立即触发完整凌晨流水线（Phase1 扫所有云盘 → Phase2 spider91 爬虫 →
    * Phase3 spider91 → 云盘迁移）。后端立即返回 202；进度看 backend 日志。
-   * 已在跑时后端会丢弃此次触发，按钮再点也不会重复进入。
+   * 如果当前已有流水线在跑，后端最多保留一个待触发请求，当前轮结束后再跑一轮。
    */
   async function handleRunNightly() {
     try {

@@ -223,13 +223,17 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 	if size <= 0 {
 		size = 24
 	}
+	sort := q.Get("sort")
 	params := catalog.ListParams{
 		Keyword:  q.Get("q"),
 		Tag:      q.Get("tag"),
 		Category: q.Get("cat"),
-		Sort:     q.Get("sort"),
+		Sort:     sort,
 		Page:     page,
 		PageSize: size,
+	}
+	if sort == "" || sort == "latest" {
+		params.PreferReadyThumbnails = true
 	}
 	items, total, err := s.Catalog.ListVideos(r.Context(), params)
 	if err != nil {
@@ -282,7 +286,8 @@ func (s *Server) handleVideoDetail(w http.ResponseWriter, r *http.Request) {
 }
 
 // pickRelatedVideos 选 total 个推荐视频。
-// 一半（向上取整）来自同标签命中，剩下用全库随机补齐；不会重复，也不会包含当前视频。
+// 一半来自同标签命中，剩下用全库随机补齐；两段都优先取已有封面的视频，
+// 不够时再回退到未生成封面的候选。结果不会重复，也不会包含当前视频。
 func (s *Server) pickRelatedVideos(ctx context.Context, current *catalog.Video, total int) []*catalog.Video {
 	if total <= 0 || current == nil {
 		return nil
@@ -295,67 +300,124 @@ func (s *Server) pickRelatedVideos(ctx context.Context, current *catalog.Video, 
 	picked := make([]*catalog.Video, 0, total)
 	seen := map[string]struct{}{current.ID: {}}
 
-	// 1) 同标签候选：对每个 tag 取一批，合并去重，洗牌后取 tagQuota 个
+	// 1) 同标签候选：先取已有封面的候选，数量不够再从全部候选里补。
 	if tagQuota > 0 && len(current.Tags) > 0 {
-		var tagPool []*catalog.Video
-		for _, tag := range current.Tags {
-			if tag == "" {
-				continue
-			}
-			items, _, err := s.Catalog.ListVideos(ctx, catalog.ListParams{
-				Tag: tag, Sort: "latest", Page: 1, PageSize: 30,
-			})
-			if err != nil {
-				continue
-			}
-			for _, v := range items {
-				if v == nil {
-					continue
-				}
-				if _, ok := seen[v.ID]; ok {
-					continue
-				}
-				seen[v.ID] = struct{}{}
-				tagPool = append(tagPool, v)
-			}
+		picked = appendRandomRelated(
+			picked,
+			s.relatedTagPool(ctx, current.Tags, seen, true),
+			tagQuota,
+			seen,
+		)
+		if len(picked) < tagQuota {
+			picked = appendRandomRelated(
+				picked,
+				s.relatedTagPool(ctx, current.Tags, seen, false),
+				tagQuota,
+				seen,
+			)
 		}
-		rand.Shuffle(len(tagPool), func(i, j int) {
-			tagPool[i], tagPool[j] = tagPool[j], tagPool[i]
-		})
-		if len(tagPool) > tagQuota {
-			tagPool = tagPool[:tagQuota]
-		}
-		picked = append(picked, tagPool...)
 	}
 
-	// 2) 随机补齐：从全库取一批（避开已选 ID），洗牌后取剩下的名额
-	remaining := total - len(picked)
-	if remaining > 0 {
+	// 2) 随机补齐：同样优先已有封面的全库候选，不够再回退。
+	if len(picked) < total {
+		picked = appendRandomRelated(
+			picked,
+			s.relatedListPool(ctx, seen, true, 200),
+			total,
+			seen,
+		)
+	}
+	if len(picked) < total {
+		picked = appendRandomRelated(
+			picked,
+			s.relatedListPool(ctx, seen, false, 200),
+			total,
+			seen,
+		)
+	}
+
+	return picked
+}
+
+func (s *Server) relatedTagPool(ctx context.Context, tags []string, seen map[string]struct{}, readyOnly bool) []*catalog.Video {
+	var pool []*catalog.Video
+	poolSeen := make(map[string]struct{})
+	for _, tag := range tags {
+		if tag == "" {
+			continue
+		}
 		items, _, err := s.Catalog.ListVideos(ctx, catalog.ListParams{
-			Sort: "latest", Page: 1, PageSize: 200,
+			Tag:                   tag,
+			Sort:                  "latest",
+			Page:                  1,
+			PageSize:              30,
+			ThumbnailReadyOnly:    readyOnly,
+			PreferReadyThumbnails: !readyOnly,
 		})
-		if err == nil {
-			var randomPool []*catalog.Video
-			for _, v := range items {
-				if v == nil {
-					continue
-				}
-				if _, ok := seen[v.ID]; ok {
-					continue
-				}
-				seen[v.ID] = struct{}{}
-				randomPool = append(randomPool, v)
+		if err != nil {
+			continue
+		}
+		for _, v := range items {
+			if v == nil {
+				continue
 			}
-			rand.Shuffle(len(randomPool), func(i, j int) {
-				randomPool[i], randomPool[j] = randomPool[j], randomPool[i]
-			})
-			if len(randomPool) > remaining {
-				randomPool = randomPool[:remaining]
+			if _, ok := seen[v.ID]; ok {
+				continue
 			}
-			picked = append(picked, randomPool...)
+			if _, ok := poolSeen[v.ID]; ok {
+				continue
+			}
+			poolSeen[v.ID] = struct{}{}
+			pool = append(pool, v)
 		}
 	}
+	return pool
+}
 
+func (s *Server) relatedListPool(ctx context.Context, seen map[string]struct{}, readyOnly bool, pageSize int) []*catalog.Video {
+	items, _, err := s.Catalog.ListVideos(ctx, catalog.ListParams{
+		Sort:                  "latest",
+		Page:                  1,
+		PageSize:              pageSize,
+		ThumbnailReadyOnly:    readyOnly,
+		PreferReadyThumbnails: !readyOnly,
+	})
+	if err != nil {
+		return nil
+	}
+	pool := make([]*catalog.Video, 0, len(items))
+	for _, v := range items {
+		if v == nil {
+			continue
+		}
+		if _, ok := seen[v.ID]; ok {
+			continue
+		}
+		pool = append(pool, v)
+	}
+	return pool
+}
+
+func appendRandomRelated(picked []*catalog.Video, pool []*catalog.Video, targetLen int, seen map[string]struct{}) []*catalog.Video {
+	if len(picked) >= targetLen || len(pool) == 0 {
+		return picked
+	}
+	rand.Shuffle(len(pool), func(i, j int) {
+		pool[i], pool[j] = pool[j], pool[i]
+	})
+	for _, v := range pool {
+		if len(picked) >= targetLen {
+			break
+		}
+		if v == nil {
+			continue
+		}
+		if _, ok := seen[v.ID]; ok {
+			continue
+		}
+		seen[v.ID] = struct{}{}
+		picked = append(picked, v)
+	}
 	return picked
 }
 

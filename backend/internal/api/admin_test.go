@@ -115,6 +115,85 @@ func TestHandleSetupStoresCredentialsAndCreatesSession(t *testing.T) {
 	}
 }
 
+func TestHandleCheckUpdateReportsNewRelease(t *testing.T) {
+	dir := t.TempDir()
+	versionFile := filepath.Join(dir, ".version")
+	if err := os.WriteFile(versionFile, []byte("v0.1.0\n2026-05-29 12:00:00\n"), 0o644); err != nil {
+		t.Fatalf("write version file: %v", err)
+	}
+	releaseServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("User-Agent") == "" {
+			http.Error(w, "missing user agent", http.StatusBadRequest)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"tag_name": "v0.2.0",
+			"html_url": "https://github.com/nianzhibai/91/releases/tag/v0.2.0",
+		})
+	}))
+	t.Cleanup(releaseServer.Close)
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/api/update/check", nil)
+	rr := httptest.NewRecorder()
+	(&AdminServer{
+		VersionFilePath: versionFile,
+		ReleaseAPIURL:   releaseServer.URL,
+	}).handleCheckUpdate(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var got updateCheckDTO
+	if err := json.NewDecoder(rr.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.CurrentVersion != "v0.1.0" {
+		t.Fatalf("currentVersion = %q, want v0.1.0", got.CurrentVersion)
+	}
+	if got.LatestVersion != "v0.2.0" {
+		t.Fatalf("latestVersion = %q, want v0.2.0", got.LatestVersion)
+	}
+	if !got.HasUpdate {
+		t.Fatalf("hasUpdate = false, want true")
+	}
+	if got.ReleaseURL == "" {
+		t.Fatalf("releaseUrl is empty")
+	}
+}
+
+func TestHandleCheckUpdateReportsUpToDate(t *testing.T) {
+	dir := t.TempDir()
+	versionFile := filepath.Join(dir, ".version")
+	if err := os.WriteFile(versionFile, []byte("v0.2.0\n"), 0o644); err != nil {
+		t.Fatalf("write version file: %v", err)
+	}
+	releaseServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"tag_name": "v0.2.0",
+			"html_url": "https://github.com/nianzhibai/91/releases/tag/v0.2.0",
+		})
+	}))
+	t.Cleanup(releaseServer.Close)
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/api/update/check", nil)
+	rr := httptest.NewRecorder()
+	(&AdminServer{
+		VersionFilePath: versionFile,
+		ReleaseAPIURL:   releaseServer.URL,
+	}).handleCheckUpdate(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var got updateCheckDTO
+	if err := json.NewDecoder(rr.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.HasUpdate {
+		t.Fatalf("hasUpdate = true, want false")
+	}
+}
+
 func TestHandleUpsertDrivePreservesExistingCredentialsWhenRequestCredentialsEmpty(t *testing.T) {
 	ctx := context.Background()
 	cat, err := catalog.Open(t.TempDir() + "/catalog.db")

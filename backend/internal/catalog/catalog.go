@@ -669,14 +669,15 @@ func (c *Catalog) FindVideoByFileSignature(ctx context.Context, fileName string,
 }
 
 type ListParams struct {
-	Keyword            string
-	DriveID            string
-	Tag                string
-	Category           string
-	Sort               string // latest | hot | week | long
-	ThumbnailReadyOnly bool
-	Page               int
-	PageSize           int
+	Keyword               string
+	DriveID               string
+	Tag                   string
+	Category              string
+	Sort                  string // latest | hot | week | long
+	ThumbnailReadyOnly    bool
+	PreferReadyThumbnails bool
+	Page                  int
+	PageSize              int
 }
 
 func (c *Catalog) ListVideos(ctx context.Context, p ListParams) ([]*Video, int, error) {
@@ -720,15 +721,20 @@ func (c *Catalog) ListVideos(ctx context.Context, p ListParams) ([]*Video, int, 
 	whereSQL := ""
 	whereSQL = " WHERE " + strings.Join(where, " AND ")
 
-	orderBy := " ORDER BY published_at DESC"
+	readyOrderPrefix := ""
+	if p.PreferReadyThumbnails {
+		readyOrderPrefix = "CASE WHEN COALESCE(thumbnail_url, '') != '' THEN 0 ELSE 1 END, "
+	}
+
+	orderBy := " ORDER BY " + readyOrderPrefix + "published_at DESC"
 	switch p.Sort {
 	case "hot":
 		// 热度 = 点赞数，点赞相同按最新
-		orderBy = " ORDER BY likes DESC, published_at DESC"
+		orderBy = " ORDER BY " + readyOrderPrefix + "likes DESC, published_at DESC"
 	case "week":
-		orderBy = " ORDER BY likes DESC"
+		orderBy = " ORDER BY " + readyOrderPrefix + "likes DESC"
 	case "long":
-		orderBy = " ORDER BY duration_seconds DESC"
+		orderBy = " ORDER BY " + readyOrderPrefix + "duration_seconds DESC"
 	}
 
 	// count

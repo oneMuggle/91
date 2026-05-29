@@ -166,6 +166,79 @@ func TestHandleHomePrioritizesVideosWithReadyThumbnails(t *testing.T) {
 	}
 }
 
+func TestHandleListLatestPrefersReadyThumbnails(t *testing.T) {
+	ctx := context.Background()
+	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := cat.Close(); err != nil {
+			t.Fatalf("close catalog: %v", err)
+		}
+	})
+
+	now := time.Now()
+	for i := 0; i < 20; i++ {
+		id := "pending-latest-" + strconv.Itoa(i)
+		if err := cat.UpsertVideo(ctx, &catalog.Video{
+			ID:          id,
+			DriveID:     "drive",
+			FileID:      id,
+			Title:       id,
+			PublishedAt: now.Add(time.Duration(i) * time.Minute),
+			CreatedAt:   now.Add(time.Duration(i) * time.Minute),
+			UpdatedAt:   now.Add(time.Duration(i) * time.Minute),
+		}); err != nil {
+			t.Fatalf("seed pending video %s: %v", id, err)
+		}
+	}
+	for i := 0; i < 12; i++ {
+		id := "ready-latest-" + strconv.Itoa(i)
+		if err := cat.UpsertVideo(ctx, &catalog.Video{
+			ID:           id,
+			DriveID:      "drive",
+			FileID:       id,
+			Title:        id,
+			ThumbnailURL: "https://thumb.example/" + id + ".jpg",
+			PublishedAt:  now.Add(-time.Duration(i+1) * time.Hour),
+			CreatedAt:    now.Add(-time.Duration(i+1) * time.Hour),
+			UpdatedAt:    now.Add(-time.Duration(i+1) * time.Hour),
+		}); err != nil {
+			t.Fatalf("seed ready video %s: %v", id, err)
+		}
+	}
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/list?page=1&size=12&sort=latest", nil)
+	(&Server{Catalog: cat}).handleList(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var got struct {
+		Items []VideoDTO `json:"items"`
+		Total int        `json:"total"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got.Total != 32 {
+		t.Fatalf("total = %d, want all matching videos included", got.Total)
+	}
+	if len(got.Items) != 12 {
+		t.Fatalf("items = %d, want 12", len(got.Items))
+	}
+	for _, item := range got.Items {
+		if !strings.HasPrefix(item.ID, "ready-latest-") {
+			t.Fatalf("latest list returned %q before ready thumbnails; items=%#v", item.ID, got.Items)
+		}
+		if !strings.HasPrefix(item.Thumbnail, "https://thumb.example/") {
+			t.Fatalf("thumbnail for %q = %q, want ready thumbnail URL", item.ID, item.Thumbnail)
+		}
+	}
+}
+
 func TestHandleUploadVideoSavesFileVideoTagsAndQueuesPreview(t *testing.T) {
 	ctx := context.Background()
 	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
@@ -574,6 +647,88 @@ func TestHandleVideoDetailIncludesDriveKindLabel(t *testing.T) {
 	}
 	if got.SourceLabel != "OneDrive" {
 		t.Fatalf("sourceLabel = %q, want OneDrive", got.SourceLabel)
+	}
+}
+
+func TestHandleVideoDetailRecommendationsPreferReadyThumbnails(t *testing.T) {
+	ctx := context.Background()
+	cat, err := catalog.Open(t.TempDir() + "/catalog.db")
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := cat.Close(); err != nil {
+			t.Fatalf("close catalog: %v", err)
+		}
+	})
+
+	now := time.Now()
+	if err := cat.UpsertVideo(ctx, &catalog.Video{
+		ID:           "current-video",
+		DriveID:      "drive",
+		FileID:       "current-video",
+		Title:        "Current",
+		Tags:         []string{"same-tag"},
+		ThumbnailURL: "https://thumb.example/current-video.jpg",
+		PublishedAt:  now,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}); err != nil {
+		t.Fatalf("seed current video: %v", err)
+	}
+	for i := 0; i < 20; i++ {
+		id := "pending-related-" + strconv.Itoa(i)
+		if err := cat.UpsertVideo(ctx, &catalog.Video{
+			ID:          id,
+			DriveID:     "drive",
+			FileID:      id,
+			Title:       id,
+			Tags:        []string{"same-tag"},
+			PublishedAt: now.Add(time.Duration(i+1) * time.Minute),
+			CreatedAt:   now.Add(time.Duration(i+1) * time.Minute),
+			UpdatedAt:   now.Add(time.Duration(i+1) * time.Minute),
+		}); err != nil {
+			t.Fatalf("seed pending related video %s: %v", id, err)
+		}
+	}
+	for i := 0; i < 8; i++ {
+		id := "ready-related-" + strconv.Itoa(i)
+		if err := cat.UpsertVideo(ctx, &catalog.Video{
+			ID:           id,
+			DriveID:      "drive",
+			FileID:       id,
+			Title:        id,
+			Tags:         []string{"same-tag"},
+			ThumbnailURL: "https://thumb.example/" + id + ".jpg",
+			PublishedAt:  now.Add(-time.Duration(i+1) * time.Hour),
+			CreatedAt:    now.Add(-time.Duration(i+1) * time.Hour),
+			UpdatedAt:    now.Add(-time.Duration(i+1) * time.Hour),
+		}); err != nil {
+			t.Fatalf("seed ready related video %s: %v", id, err)
+		}
+	}
+
+	req := requestWithVideoID(http.MethodGet, "/api/video/current-video", "current-video", strings.NewReader(``))
+	rr := httptest.NewRecorder()
+	(&Server{Catalog: cat}).handleVideoDetail(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var got VideoDetailDTO
+	if err := json.NewDecoder(rr.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got.RelatedVideos) != 6 {
+		t.Fatalf("related videos = %d, want 6; items=%#v", len(got.RelatedVideos), got.RelatedVideos)
+	}
+	for _, item := range got.RelatedVideos {
+		if !strings.HasPrefix(item.ID, "ready-related-") {
+			t.Fatalf("related returned %q before ready thumbnails; items=%#v", item.ID, got.RelatedVideos)
+		}
+		if !strings.HasPrefix(item.Thumbnail, "https://thumb.example/") {
+			t.Fatalf("thumbnail for %q = %q, want ready thumbnail URL", item.ID, item.Thumbnail)
+		}
 	}
 }
 

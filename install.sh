@@ -12,6 +12,7 @@ GH_PROXY="${GH_PROXY:-}"
 CONFIGURE_UFW="${CONFIGURE_UFW:-1}"
 INSTALL_DEPS="${INSTALL_DEPS:-1}"
 SELF_UPDATE="${SELF_UPDATE:-1}"
+FORCE_UPDATE="${FORCE_UPDATE:-0}"
 INSTALL_SCRIPT_REF="${INSTALL_SCRIPT_REF:-main}"
 INSTALL_SCRIPT_URL="${INSTALL_SCRIPT_URL:-${GH_PROXY}https://raw.githubusercontent.com/${GITHUB_REPO}/${INSTALL_SCRIPT_REF}/install.sh}"
 VIDEO_SITE_SKIP_SELF_UPDATE="${VIDEO_SITE_SKIP_SELF_UPDATE:-0}"
@@ -68,6 +69,7 @@ Options via environment:
   INSTALL_DEPS=$INSTALL_DEPS
   CONFIGURE_UFW=$CONFIGURE_UFW
   SELF_UPDATE=$SELF_UPDATE
+  FORCE_UPDATE=$FORCE_UPDATE
   INSTALL_SCRIPT_REF=$INSTALL_SCRIPT_REF
   INSTALL_SCRIPT_URL=$INSTALL_SCRIPT_URL
   SERVICE_READY_TIMEOUT=$SERVICE_READY_TIMEOUT
@@ -233,6 +235,8 @@ RestartSec=5
 TimeoutStopSec=20
 Environment=VIDEO_CONFIG=${INSTALL_PATH}/config.yaml
 Environment=VIDEO_FRONTEND_DIR=${INSTALL_PATH}/dist
+Environment=VIDEO_VERSION_FILE=${VERSION_FILE}
+Environment=VIDEO_GITHUB_REPO=${GITHUB_REPO}
 Environment=HOME=/root
 Environment=PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 LimitNOFILE=65536
@@ -307,6 +311,7 @@ exec_latest_manager_update() {
     "CONFIGURE_UFW=$CONFIGURE_UFW"
     "INSTALL_DEPS=$INSTALL_DEPS"
     "SELF_UPDATE=$SELF_UPDATE"
+    "FORCE_UPDATE=$FORCE_UPDATE"
     "INSTALL_SCRIPT_REF=$INSTALL_SCRIPT_REF"
     "INSTALL_SCRIPT_URL=$INSTALL_SCRIPT_URL"
     "SERVICE_READY_TIMEOUT=$SERVICE_READY_TIMEOUT"
@@ -412,19 +417,63 @@ fetch_and_unpack() {
   rm -rf "$tmp"
 }
 
-current_version_from_github() {
+installed_version() {
+  if [[ -f "$VERSION_FILE" ]]; then
+    head -n1 "$VERSION_FILE" 2>/dev/null | tr -d '\r'
+  fi
+}
+
+target_version() {
   if [[ "$VERSION" != "latest" ]]; then
     printf '%s' "$VERSION"
     return
   fi
-  curl -fsSL "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" \
+
+  local body version effective_url
+  body="$(curl -fsSL \
+    -H "Accept: application/vnd.github+json" \
+    -H "User-Agent: video-site-91-installer" \
+    "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" 2>/dev/null || true)"
+  version="$(printf '%s\n' "$body" \
     | sed -nE 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' \
+    | head -n1)"
+  if [[ -n "$version" ]]; then
+    printf '%s' "$version"
+    return
+  fi
+
+  effective_url="$(curl -fsSLI -o /dev/null -w '%{url_effective}' "$(download_base_url)/$(asset_name)" 2>/dev/null || true)"
+  printf '%s\n' "$effective_url" \
+    | sed -nE 's#.*/releases/download/([^/]+)/.*#\1#p' \
     | head -n1
+}
+
+should_skip_update() {
+  [[ "$FORCE_UPDATE" != "1" ]] || return 1
+
+  local current target
+  current="$(installed_version)"
+  target="$(target_version || true)"
+
+  if [[ -z "$target" ]]; then
+    warn "cannot determine target version; continuing update"
+    return 1
+  fi
+
+  if [[ -z "$current" ]]; then
+    log "installed version: unknown"
+    log "target version: $target"
+    return 1
+  fi
+
+  log "installed version: $current"
+  log "target version: $target"
+  [[ "$current" == "$target" ]]
 }
 
 record_version() {
   local version
-  version="$(current_version_from_github || true)"
+  version="$(target_version || true)"
   [[ -n "$version" ]] || version="$VERSION"
   {
     echo "$version"
@@ -467,14 +516,20 @@ install_app() {
 
 update_app() {
   check_system
-  check_disk_space
-  install_deps
   [[ -f "$INSTALL_PATH/server" ]] || die "not installed at $INSTALL_PATH"
 
   if self_update_manager; then
     log "re-running update with latest manager script"
     exec_latest_manager_update
   fi
+
+  if should_skip_update; then
+    log "already up to date; skipped app update"
+    return 0
+  fi
+
+  check_disk_space
+  install_deps
 
   local backup
   backup="$(mktemp -d)"

@@ -104,6 +104,14 @@ func main() {
 	}
 	setupRequired := config.RequiresAdminSetup(cfg)
 	var setupMu sync.Mutex
+	versionFilePath := strings.TrimSpace(os.Getenv("VIDEO_VERSION_FILE"))
+	if versionFilePath == "" {
+		versionFilePath = filepath.Join(filepath.Dir(cfgPath), ".version")
+	}
+	githubRepo := strings.TrimSpace(os.Getenv("VIDEO_GITHUB_REPO"))
+	if githubRepo == "" {
+		githubRepo = strings.TrimSpace(os.Getenv("GITHUB_REPO"))
+	}
 
 	apiServer := &api.Server{
 		Catalog:   cat,
@@ -117,8 +125,10 @@ func main() {
 	}
 
 	adminServer := &api.AdminServer{
-		Catalog: cat,
-		Auth:    authr,
+		Catalog:         cat,
+		Auth:            authr,
+		VersionFilePath: versionFilePath,
+		GitHubRepo:      githubRepo,
 		SetupRequired: func() bool {
 			setupMu.Lock()
 			defer setupMu.Unlock()

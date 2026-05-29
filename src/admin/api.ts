@@ -61,6 +61,18 @@ export function me() {
   return request<{ authenticated: boolean }>("/me");
 }
 
+export type UpdateCheck = {
+  currentVersion: string;
+  latestVersion: string;
+  hasUpdate: boolean;
+  releaseUrl?: string;
+  checkedAt: string;
+};
+
+export function checkUpdate() {
+  return request<UpdateCheck>("/update/check");
+}
+
 // ---------- Drives ----------
 
 export type AdminDrive = {
@@ -355,7 +367,7 @@ export function updateSettings(body: Partial<Settings>) {
  * 立即触发一次完整的凌晨流水线（Phase1 扫盘 + Phase2 91 爬虫 + Phase3 迁移），
  * 不论当前时间或今日是否已跑。立即返回 202；进度通过 backend 日志观察。
  *
- * 流水线已在跑时后端会丢弃此次触发。
+ * 流水线已在跑时后端最多保留一个待触发请求；已有待触发请求时，新的点击会被忽略。
  */
 export function runNightlyJob() {
   return request<{ ok: boolean }>("/jobs/nightly/run", { method: "POST" });
