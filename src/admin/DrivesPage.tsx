@@ -80,10 +80,10 @@ export function DrivesPage() {
   const [selectedDriveId, setSelectedDriveId] = useState<string | null>(null);
   const { show } = useToast();
 
-  // 当前系统中可作为 spider91 上传目标的 drive 列表（pikpak ∪ p115）。
+  // 当前系统中可作为 spider91 上传目标的 drive 列表（pikpak ∪ p115 ∪ onedrive）。
   // 用户保存 spider91 drive 时从这里挑一个；空表示本地保存不上传。
   const uploadTargets = useMemo(
-    () => list.filter((d) => d.kind === "pikpak" || d.kind === "p115"),
+    () => list.filter((d) => d.kind === "pikpak" || d.kind === "p115" || d.kind === "onedrive"),
     [list]
   );
 
@@ -979,9 +979,9 @@ function DriveForm({
  * Spider91UploadTargetField 是 spider91 drive 表单专属的"上传目标"下拉。
  *
  * 行为：
- *   - 选项 = "本地保存，不上传" + 系统中所有 pikpak/p115 drive
+ *   - 选项 = "本地保存，不上传" + 系统中所有 pikpak/p115/onedrive drive
  *   - value="" 时后端不迁移上传，视频保存在服务器本地
- *   - 没有任何 pikpak/p115 drive 时仍允许选择本地保存
+ *   - 没有任何 pikpak/p115/onedrive drive 时仍允许选择本地保存
  *   - 该字段写入的是全局 setting `spider91.upload_drive_id`，不是 drive 自己的
  *     credentials —— 所有 spider91 drive 共享同一个上传目标
  */
@@ -1006,7 +1006,7 @@ function Spider91UploadTargetField({
         ))}
       </select>
       <div className="admin-form__help">
-        选择本地保存时，爬取视频只保存在服务器本地；选择 115 网盘或 PikPak 后，较早的视频会上传到该云盘根目录。该设置全局生效。
+        选择本地保存时，爬取视频只保存在服务器本地；选择 115 网盘、PikPak 或 OneDrive 后，较早的视频会上传到该云盘根目录下的 91 Spider 文件夹。该设置全局生效。
       </div>
     </div>
   );
@@ -1026,7 +1026,7 @@ function credentialHelp(kind: Kind, isEdit: boolean): string {
     case "onedrive":
       return `按 OpenList 默认应用在线挂载，只需要 refresh_token；保存时会自动刷新并保存 token。${note}`;
     case "spider91":
-      return "91 爬虫会把定时抓取到的视频和封面先保存到本机，并作为一个视频来源接入站点；它不是外部网盘，不需要填写 Cookie 或目录 ID。后续流水线会把较早的视频上传到你选择的 115 / PikPak 目标盘。";
+      return "91 爬虫会把定时抓取到的视频和封面先保存到本机，并作为一个视频来源接入站点；它不是外部网盘，不需要填写 Cookie 或目录 ID。后续流水线会把较早的视频上传到你选择的 115 / PikPak / OneDrive 目标盘。";
     default:
       return "";
   }
