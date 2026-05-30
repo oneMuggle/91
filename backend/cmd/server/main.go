@@ -459,7 +459,7 @@ func (a *App) driveGenerationStatuses() map[string]api.DriveGenerationStatuses {
 		status.Thumbnail = generationStatusFromPreview(worker.Status())
 		missing, err := a.cat.CountVideosNeedingThumbnail(context.Background(), id)
 		if err != nil {
-			log.Printf("[thumb] count missing thumbnails %s: %v", id, err)
+			log.Printf("[thumb] count thumbnail work %s: %v", id, err)
 		} else {
 			status.Thumbnail.QueueLength = missing
 			if missing > 0 && status.Thumbnail.State == "idle" {
@@ -897,10 +897,10 @@ func (a *App) enqueueThumbnails(ctx context.Context, driveID string, w *preview.
 	if len(pending) == 0 {
 		return
 	}
-	log.Printf("[thumb] enqueue %d missing thumbnails for drive=%s", len(pending), driveID)
+	log.Printf("[thumb] enqueue %d thumbnail/duration tasks for drive=%s", len(pending), driveID)
 	for _, v := range pending {
 		if !w.EnqueueBlocking(ctx, v) {
-			log.Printf("[thumb] enqueue missing thumbnails canceled for drive=%s", driveID)
+			log.Printf("[thumb] enqueue thumbnail/duration tasks canceled for drive=%s", driveID)
 			return
 		}
 	}

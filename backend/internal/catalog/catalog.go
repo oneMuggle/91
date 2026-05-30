@@ -501,7 +501,10 @@ func (c *Catalog) ListVideosByThumbnailStatus(ctx context.Context, driveID, stat
 	return out, nil
 }
 
-// ListVideosNeedingThumbnail returns videos that still need a thumbnail attempt.
+// ListVideosNeedingThumbnail returns videos that still need thumbnail-worker work.
+// Besides missing thumbnails, this includes videos with an existing thumbnail but
+// missing duration metadata, because the thumbnail worker probes duration while
+// it already has a stream link.
 // Failed thumbnails are reported separately and should not block teaser generation.
 // Videos whose local assets were cleared because they are fingerprint duplicates
 // stay pending in the DB, but uniqueVideoWhereSQL keeps them out of this queue
@@ -513,7 +516,10 @@ func (c *Catalog) ListVideosNeedingThumbnail(ctx context.Context, driveID string
 	rows, err := c.db.QueryContext(ctx,
 		`SELECT `+allVideoCols+` FROM videos
 		 WHERE drive_id = ?
-		   AND COALESCE(thumbnail_url, '') = ''
+		   AND (
+		        COALESCE(thumbnail_url, '') = ''
+		        OR COALESCE(duration_seconds, 0) <= 0
+		   )
 		   AND COALESCE(thumbnail_status, 'pending') NOT IN ('failed', 'skipped')
 		   AND COALESCE(hidden, 0) = 0
 		   AND `+uniqueVideoWhereSQL+`
@@ -540,7 +546,10 @@ func (c *Catalog) CountVideosNeedingThumbnail(ctx context.Context, driveID strin
 	err := c.db.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM videos
 		 WHERE drive_id = ?
-		   AND COALESCE(thumbnail_url, '') = ''
+		   AND (
+		        COALESCE(thumbnail_url, '') = ''
+		        OR COALESCE(duration_seconds, 0) <= 0
+		   )
 		   AND COALESCE(thumbnail_status, 'pending') NOT IN ('failed', 'skipped')
 		   AND COALESCE(hidden, 0) = 0
 		   AND `+uniqueVideoWhereSQL,
