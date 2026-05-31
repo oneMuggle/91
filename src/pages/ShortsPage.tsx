@@ -127,6 +127,9 @@ export default function ShortsPage() {
   const pageRef = useRef<HTMLDivElement | null>(null);
   // index → video element，用来精确控制播放/暂停
   const videoRefs = useRef<Map<number, HTMLVideoElement>>(new Map());
+  const activeIndexRef = useRef(0);
+  const ignoreIntersectionUntilRef = useRef(0);
+  const fullscreenRestoreTimersRef = useRef<number[]>([]);
 
   // 当前是否处在浏览器全屏（Fullscreen API）状态。
   // iOS Safari 不支持元素级 Fullscreen API，这里会一直保持 false，
@@ -139,6 +142,10 @@ export default function ShortsPage() {
   // 与后端的真实 likes 字段同步——后端是单纯计数器，前端在这里防重避免连发。
   // 用户在操作栏点取消时会从这里移除，允许之后再次点赞。
   const likedIdsRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    activeIndexRef.current = activeIndex;
+  }, [activeIndex]);
 
   /**
    * 切换点赞状态。
@@ -260,6 +267,8 @@ export default function ShortsPage() {
 
     const observer = new IntersectionObserver(
       (entries) => {
+        if (Date.now() < ignoreIntersectionUntilRef.current) return;
+
         let bestIndex = -1;
         let bestRatio = 0.6;
         for (const entry of entries) {
@@ -447,11 +456,37 @@ export default function ShortsPage() {
     };
   }, []);
 
+  function clearFullscreenRestoreTimers() {
+    for (const timer of fullscreenRestoreTimersRef.current) {
+      window.clearTimeout(timer);
+    }
+    fullscreenRestoreTimersRef.current = [];
+  }
+
+  function restoreActiveSlideIntoView() {
+    const idx = activeIndexRef.current;
+    const slide = containerRef.current?.querySelector<HTMLElement>(
+      `[data-index="${idx}"]`
+    );
+    if (!slide) return;
+    slide.scrollIntoView({ block: "start", inline: "nearest", behavior: "auto" });
+  }
+
+  function scheduleFullscreenActiveRestore() {
+    ignoreIntersectionUntilRef.current = Date.now() + 700;
+    clearFullscreenRestoreTimers();
+    restoreActiveSlideIntoView();
+    fullscreenRestoreTimersRef.current = [80, 220, 520].map((delay) =>
+      window.setTimeout(restoreActiveSlideIntoView, delay)
+    );
+  }
+
   // ---- 浏览器全屏（Fullscreen API） ----
   // 监听全屏状态变化，保持 React state 同步。
   // 用户按 ESC / 系统返回 / 浏览器退出全屏按钮 时也会走这里。
   useEffect(() => {
     function handleChange() {
+      scheduleFullscreenActiveRestore();
       setIsFullscreen(
         document.fullscreenElement !== null ||
           // Safari (desktop) 旧前缀
@@ -464,6 +499,7 @@ export default function ShortsPage() {
     return () => {
       document.removeEventListener("fullscreenchange", handleChange);
       document.removeEventListener("webkitfullscreenchange", handleChange);
+      clearFullscreenRestoreTimers();
     };
   }, []);
 
@@ -540,6 +576,7 @@ export default function ShortsPage() {
   }
 
   function toggleFullscreen() {
+    scheduleFullscreenActiveRestore();
     if (isFullscreen) exitPageFullscreen();
     else requestPageFullscreen();
   }

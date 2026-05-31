@@ -30,3 +30,19 @@ test("shorts progress dragging uses immediate pointer state", () => {
   assert.match(shortsPageSource, /function getSeekDuration/);
   assert.match(shortsPageSource, /onLostPointerCapture=\{handleProgressPointerEnd\}/);
 });
+
+test("shorts fullscreen changes preserve the active slide", () => {
+  assert.match(shortsPageSource, /const activeIndexRef = useRef\(0\)/);
+  assert.match(shortsPageSource, /const ignoreIntersectionUntilRef = useRef\(0\)/);
+  assert.match(
+    shortsPageSource,
+    /if \(Date\.now\(\) < ignoreIntersectionUntilRef\.current\) return;/
+  );
+  assert.match(shortsPageSource, /function scheduleFullscreenActiveRestore\(\)/);
+  assert.match(shortsPageSource, /scheduleFullscreenActiveRestore\(\);\s*setIsFullscreen/);
+  assert.match(
+    shortsPageSource,
+    /function toggleFullscreen\(\) \{\s*scheduleFullscreenActiveRestore\(\);/
+  );
+  assert.match(shortsPageSource, /scrollIntoView\(\{ block: "start", inline: "nearest", behavior: "auto" \}\)/);
+});
